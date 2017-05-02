@@ -50,6 +50,7 @@ class VAE(object):
     """
     def __init__(self, sess, input_size, batch_size, latent_size,
                  encoder, decoder, activation=tf.nn.softplus,
+                 reconstr_loss_type="binary_cross_entropy",
                  learning_rate=1e-3, submodel=0, vae_tm1=None):
         self.activation = activation
         self.learning_rate = learning_rate
@@ -62,7 +63,7 @@ class VAE(object):
         self.batch_size = batch_size
         self.iteration = 0
         self.submodel = submodel
-        # self.num_discrete = self.submodel - 1  # TBD
+        self.reconstr_loss_type = reconstr_loss_type
         self.num_discrete = self.submodel + 1  # TODO: add dupe detection
 
         # gumbel params
@@ -134,8 +135,9 @@ class VAE(object):
         # Summaries and saver
         summaries = [tf.summary.scalar("vae_loss_mean", self.cost_mean),
                      tf.summary.scalar("vae_latent_loss_mean", self.latent_loss_mean),
-                     tf.summary.histogram("vae_kl_unused", self.kl_unused_classes),
-                     tf.summary.histogram("vae_kl_used", self.kl_used_classes),
+                     tf.summary.scalar("vae_selected_class", tf.argmax(tf.reduce_sum(self.z_discrete, 0), 0)),
+                     tf.summary.histogram("vae_kl_normal", self.kl_normal),
+                     tf.summary.histogram("vae_kl_discrete", self.kl_discrete),
                      tf.summary.histogram("vae_latent_dist", self.latent_kl),
                      tf.summary.scalar("vae_latent_loss_max", tf.reduce_max(self.latent_kl)),
                      tf.summary.scalar("vae_latent_loss_min", tf.reduce_min(self.latent_kl)),
@@ -169,12 +171,9 @@ class VAE(object):
             summaries += [tf.summary.image("xhat_tm1",
                                            tf.reshape(self.xhat_tm1, img_shp),
                                            max_outputs=num_xhat_tm1[0]),
+                          tf.summary.scalar("vae_tm1_selected_class", tf.argmax(tf.reduce_sum(self.z_discrete_tm1, 0), 0)),
                           tf.summary.scalar("vae_kl_distill_mean",
-                                            tf.reduce_mean(self.kl_consistency)),
-                          tf.summary.scalar("kl_scaling_dist_min",
-                                            tf.reduce_min(self.kl_scale)),
-                          tf.summary.scalar("kl_scaling_dist_max",
-                                            tf.reduce_max(self.kl_scale))]
+                                            tf.reduce_mean(self.kl_consistency))]
 
         # Merge all the summaries, but ensure we are post-activation
         with tf.control_dependencies([self.x_reconstr_mean_activ]):
@@ -191,9 +190,9 @@ class VAE(object):
     '''
     def get_name(self):
         if self.submodel == 0:
-            full_hash_str = self.activation.__name__ + '_' \
-                            + str(self.encoder_model.get_sizing()) \
-                            + str(self.decoder_model.get_sizing()) \
+            full_hash_str = self.activation.__name__ \
+                            + '_enc' + str(self.encoder_model.get_sizing()) \
+                            + '_dec' + str(self.decoder_model.get_sizing()) \
                             + "_learningrate" + str(self.learning_rate) \
                             + "_latent size" + str(self.latent_size)
             full_hash_str = full_hash_str.strip().lower().replace('[', '')  \
@@ -273,7 +272,7 @@ class VAE(object):
             # Note: encode returns z, z_normal, z_discrete,
             #                      kl_normal, kl_discrete
             # Note2: discrete dimension is self.submodel
-            self.q_z_s_given_x_t, _, _, _ \
+            _, _, self.q_z_s_given_x_t, _, _ \
                 = self.encoder(self.xhat_tm1,
                                rnd_sample=None,
                                hard=False,  # True?
@@ -283,7 +282,7 @@ class VAE(object):
             # This is necessary because we need to evaluate the posterior
             # in order to compare Q^T(x|z) against Q^S(x|z)
             # Note2: discrete dimension is self.submodel - 1 [possibly?]
-            self.q_z_t_given_x_t, _, _, _ \
+            _, _, self.q_z_t_given_x_t, _, _ \
                 = self.vae_tm1.encoder(self.xhat_tm1,
                                        rnd_sample=None,
                                        hard=False,  # True?
@@ -291,12 +290,12 @@ class VAE(object):
 
             # Get the number of gaussians for student and teacher
             # We also only consider num_old_data of the batch
-            qzt_shp = self.q_z_t_given_x_t.get_shape().as_list()
-            qzs_shp = self.q_z_s_given_x_t.get_shape().as_list()
-            ng_t = qzt_shp[0] - self.vae_tm1.num_discrete  # num gaussians(t)
-            ng_s = qzs_shp[0] - self.num_discrete          # num gaussians(s)
-            self.q_z_s_given_x_t = self.q_z_s_given_x_t[0:self.num_old_data, ng_s:]
-            self.q_z_t_given_x_t = self.q_z_t_given_x_t[0:self.num_old_data, ng_t:]
+            # qzt_shp = self.q_z_t_given_x_t.get_shape().as_list()
+            # qzs_shp = self.q_z_s_given_x_t.get_shape().as_list()
+            # ng_t = qzt_shp[0] - self.vae_tm1.num_discrete  # num gaussians(t)
+            # ng_s = qzs_shp[0] - self.num_discrete          # num gaussians(s)
+            self.q_z_s_given_x_t = self.q_z_s_given_x_t[0:self.num_old_data]
+            self.q_z_t_given_x_t = self.q_z_t_given_x_t[0:self.num_old_data]
             self.q_z_s_given_x_t, self.q_z_t_given_x_t \
                 = VAE.zero_pad_smaller_cat(self.q_z_s_given_x_t,
                                            self.q_z_t_given_x_t)
@@ -315,7 +314,6 @@ class VAE(object):
     def reparameterize(encoded, num_discrete, tau, hard=False,
                        rnd_sample=None, eps=1e-20):
         eshp = encoded.get_shape().as_list()
-        print 'esp = ', eshp
         num_normal = eshp[1] - num_discrete
         print 'num_normal = ', num_normal
         logits_normal = encoded[:, 0:num_normal]
@@ -328,8 +326,6 @@ class VAE(object):
         z_n, kl_n = gaussian_reparmeterization(logits_normal)
 
         # merge and pad appropriately
-        kl_discrete = tf.concat([tf.zeros(num_normal), kl_discrete], axis=0)
-        kl_n = tf.concat([kl_n, tf.zeros(num_discrete)], axis=0)
         z = tf.concat([z_n, z_discrete], axis=1)
 
         return [slim.flatten(z),
@@ -376,6 +372,24 @@ class VAE(object):
 
         return tf.cond(self.is_training, _train, _test)
 
+    def generate_at_least(self, vae_tm1, batch_size):
+        # Returns :
+        # 1) a categorical and a Normal distribution concatenated
+        # 2) x_hat_tm1 : the reconstructed data from the old model
+        print 'generating data from previous #discrete: ', vae_tm1.num_discrete
+        z_cat = generate_random_categorical(vae_tm1.num_discrete,
+                                            batch_size)
+        z_normal = tf.random_normal([batch_size, vae_tm1.latent_size])
+        z = tf.concat([z_normal, z_cat], axis=1)
+        zshp = z.get_shape().as_list()  # TODO: debug trace
+        print 'z_generated = ', zshp
+
+        # Generate reconstructions of historical Z's
+        xr = tf.stop_gradient(tf.nn.sigmoid(vae_tm1.generator(z, reuse=True)))
+        print 'xhat internal shp = ', xr.get_shape().as_list()  # TODO: debug
+
+        return [z, z_cat, xr]
+
     def _generate_vae_tm1_data(self):
         if self.vae_tm1 is not None:
             num_instances = self.x.get_shape().as_list()[0]
@@ -390,7 +404,7 @@ class VAE(object):
                 # generate data by randomly sampling a categorical for
                 # N-1 positions; also sample a N(0, I) in order to
                 # generate variability
-                self.z_tm1, self.xhat_tm1 \
+                self.z_tm1, self.z_discrete_tm1, self.xhat_tm1 \
                     = self.generate_at_least(self.vae_tm1,
                                              self.batch_size)
 
@@ -434,6 +448,7 @@ class VAE(object):
             self.kl_discrete = self.encoder(self.x_augmented,
                                             rnd_sample=None)
         print 'z_encoded = ', self.z.get_shape().as_list()
+        print 'z_discrete = ', self.z_discrete.get_shape().as_list()
 
         # reconstruct x via the generator & run activation
         self.x_reconstr_mean = self.generator(self.z)
@@ -442,7 +457,7 @@ class VAE(object):
         # self.x_reconstr_mean_activ = self.x_reconstr.mean()
 
     def _loss_helper(self, truth, pred):
-        if self.target_dataset == "mnist":
+        if self.reconstr_loss_type == "binary_cross_entropy":
             loss = self._cross_entropy(truth, pred)
         else:
             loss = self._l2_loss(truth, pred)
@@ -480,7 +495,7 @@ class VAE(object):
         #     the prior.
         # kl_categorical(p=none, q=none, p_logits=none, q_logits=none, eps=1e-6):
         # cost = reconstr_loss - latent_kl
-        cost = reconstr_loss + latent_kl + consistency_kl
+        cost = reconstr_loss + latent_kl - consistency_kl
 
         # create the reductions only once
         latent_loss_mean = tf.reduce_mean(latent_kl)
@@ -490,32 +505,16 @@ class VAE(object):
         return [reconstr_loss, reconstr_loss_mean,
                 latent_loss_mean, cost, cost_mean]
 
-    def generate_at_least(self, vae_tm1, batch_size):
-        # Returns :
-        # 1) a categorical and a Normal distribution concatenated
-        # 2) x_hat_tm1 : the reconstructed data from the old model
-        z_cat = generate_random_categorical(vae_tm1.num_discrete,
-                                            batch_size)
-        z_normal = tf.random_normal([batch_size, vae_tm1.latent_size])
-        z = tf.concat([z_normal, z_cat])
-        zshp = z.get_shape().as_list()  # TODO: debug trace
-        print 'z internal shp = ', zshp
-
-        # Generate reconstructions of historical Z's
-        xr = tf.stop_gradient(tf.nn.sigmoid(vae_tm1.generator(z, reuse=True)))
-        print 'xhat internal shp = ', xr.get_shape().as_list()  # TODO: debug
-
-        return z, xr
-
     def _create_loss_optimizer(self):
         # build constraint graph
         self._create_constraints()
 
         with tf.variable_scope(self.get_name() + "/loss_optimizer"):
-            # set the indexes of the latent_kl to zero for the
-            # indices that we are constraining over as we are computing
-            # a regularizer in the above function
+            self.latent_kl = self.kl_normal + self.kl_discrete
             if self.submodel > 0:
+                # set the indexes[batch] of the latent kl to zero for the
+                # indices that we are constraining over as we are computing
+                # a regularizer in the above function
                 zero_vals = [self.latent_kl[0:self.num_current_data],
                              tf.zeros([self.num_old_data])]
                 self.latent_kl = tf.concat(axis=0, values=zero_vals)
@@ -526,7 +525,7 @@ class VAE(object):
                 self.cost, self.cost_mean \
                 = self.vae_loss(self.x_augmented,
                                 self.x_reconstr_mean,
-                                self.kl_normal + self.kl_discrete,
+                                self.latent_kl,
                                 self.kl_consistency)
 
             # construct our optimizer
@@ -572,31 +571,23 @@ class VAE(object):
                 print 'updated tau to ', self.tau_host
 
             ops_to_run = [self.optimizer, self.iteration_gpu_op,
-                          self.kl_consistency, self.latent_kl, self.q_z_given_x,
-                          self.z, self.cost_mean, self.reconstr_loss_mean,
+                          self.cost_mean, self.reconstr_loss_mean,
                           self.latent_loss_mean]
 
             if self.iteration % iteration_print == 0:
-                _, _, kld, lkl, zhat_t, z, \
-                    cost, rloss, lloss, summary \
+                _, _, cost, rloss, lloss, summary \
                     = self.sess.run(ops_to_run + [self.summaries],
                                     feed_dict=feed_dict)
 
                 self.summary_writer.add_summary(summary, self.iteration
                                                 * iteration_print)
             else:
-                _, _, kld, lkl, zhat_t, z, \
-                    cost, rloss, lloss \
+                _, _, cost, rloss, lloss \
                     = self.sess.run(ops_to_run,
                                     feed_dict=feed_dict)
 
         except Exception as e:
             print 'caught exception in partial fit: ', e
-
-        if hasattr(self, 'xhat_tm1'):
-            print 'zhat_t = ', np.argmax(zhat_t, axis=1), ' | ',
-
-        print "latent_kl = ", np.sum(lkl), " | kl_distill = ", np.sum(kld)
 
         self.iteration += 1
         return cost, rloss, lloss
@@ -613,7 +604,7 @@ class VAE(object):
         Note: This is a slow op in tensorflow
               because the session needs to be run
         '''
-        updated_latent_size = self.latent_size + 1  # XXX: compute this
+        updated_latent_size = 2*self.latent_size + self.num_discrete + 1   # XXX: compute this
         encoder = DenseEncoder(self.sess, updated_latent_size,
                                self.is_training,
                                use_ln=self.encoder_model.use_ln,
@@ -624,6 +615,8 @@ class VAE(object):
                                use_ln=self.decoder_model.use_ln,
                                use_bn=self.decoder_model.use_bn,
                                activate_last_layer=False)
+        print 'encoder = ', encoder.get_info()
+        print 'decoder = ', decoder.get_info()
 
         vae_tp1 = VAE(self.sess, self.input_size, self.batch_size,
                       latent_size=self.latent_size,
@@ -645,8 +638,7 @@ class VAE(object):
         # sample from Gaussian distribution
         return self.sess.run(self.z, feed_dict={self.x: X,
                                                 self.tau: self.tau_host,
-                                                self.is_training: False,
-                                                self.dropout_keep_prob: 1.0})
+                                                self.is_training: False})
 
     def generate(self, z=None):
         """ Generate data by sampling from latent space.
@@ -740,10 +732,11 @@ def build_Nd_vae(sess, source, input_shape, latent_size, batch_size, epochs=100)
                 for epoch in range(int(1e6)):
                     # fork if we get a new model
                     prev_model = current_model
-                    inputs, outputs, indexes, current_model = generate_train_data(source,
-                                                                                  batch_size,
-                                                                                  batch_size,
-                                                                                  current_model)
+                    inputs, outputs, indexes, current_model \
+                        = generate_train_data(source,
+                                              batch_size,
+                                              batch_size,
+                                              current_model)
                     if prev_model != current_model:
                         previous_data, _, _ = _generate_from_index(source, [prev_model]*batch_size)
                         # plt.figure()
@@ -942,14 +935,6 @@ def generate_test_data(generators, num_train, batch_size):
     indexes = indexes[0:num_batches * batch_size] # dump extra data
     return _generate_from_index(generators, indexes)
 
-def evaluate_running_hist(vae):
-    vae_t = vae
-    current_vae = 0
-    while vae_t is not None:
-        print 'histogram[vae# %d]' % current_vae, vae_t.running_hist_host
-        vae_t = vae_t.vae_tm1
-        current_vae += 1
-
 def main():
     if FLAGS.target_dataset == "mnist":
         from tensorflow.examples.tutorials.mnist import input_data
@@ -985,38 +970,10 @@ def main():
                 for g, i in zip(generators, range(len(generators))):
                     x_sample, y_sample = g.get_test_batch_iter(FLAGS.batch_size)
                     latent_projection = vae.transform(x_sample)
-                    print '############### Testing inference on class %d ##################' % i
-                    print 'full latent projection = ', latent_projection.shape
-                    #print 'predicted[%d] = ' % i, latent_projection[0]
-                    #hist, edges = np.histogram(latent_projection, bins=FLAGS.latent_size, range=[0.0, 1.0])
-                    #print 'test hist[%d] = ' % i, hist
-                    #print 'test hist edges[%d] = ' % i, edges
-                    print 'test hist_argmax[%d] = ' % i, np.argmax(latent_projection, axis=1)
-                    print '################################################################'
-
-                # We dont need a generator to test inference or the histograms
-                print '\n############### Evaluating Model Consistencies #####################'
-                vae_consistency = vae
-                while vae_consistency is not None:
-                    z_test_i = vae_consistency.running_Z_logits_host
-                    plot_vae_consistency(sess, vae, z_test_i,
-                                         vae_consistency.submodel,
-                                         FLAGS.batch_size)
-                    vae_consistency = vae_consistency.vae_tm1
-
-                print '.......done [see imgs/vae_consistency_*]'
-                print '#################################################################'
 
                 # print '\n############### Testing generation on [%d] #####################' % vae.submodel
                 # plot_ND_vae_inference(sess, vae, FLAGS.batch_size)
                 # print '#################################################################'
-
-
-
-                # print '\n############### Histogram Distr on Class %d ###################' % i
-                # print evaluate_running_hist(vae)
-                # print '###############################################################'
-
             else:
                 for i in range(100):
                     x_sample, y_sample = generators[0].test.next_batch(FLAGS.batch_size)
@@ -1031,8 +988,8 @@ def main():
                     x_sample, y_sample = generators[0].test.next_batch(10000)
                     plot_2d_vae(sess, x_sample, y_sample, vae, FLAGS.batch_size)
                 elif FLAGS.target_dataset == "mnist" and FLAGS.sequential:
-                    #x_sample, y_sample = input_data.read_data_sets('MNIST_data', one_hot=True).test.next_batch(10000)
-                    x_sample, y_sample = generators[0].get_test_batch_iter(1000)
+                    x_sample, y_sample = input_data.read_data_sets('MNIST_data', one_hot=True).test.next_batch(10000)
+                    #x_sample, y_sample = generators[0].get_test_batch_iter(1000)
                     plot_2d_vae(sess, x_sample, y_sample, vae, FLAGS.batch_size)
                 elif FLAGS.target_dataset == "regression":
                     # [inputs, outputs, indexes]

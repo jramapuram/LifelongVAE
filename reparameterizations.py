@@ -22,8 +22,9 @@ def gaussian_reparmeterization(logits_z, eps=None):
     cov = tf.multiply(tf.sqrt(tf.exp(z_log_sigma_sq)), eps)
     z = tf.add(z_mean, cov, name="z")
 
+    reduce_index = [1] if len(zshp) == 2 else [1, 2]
     kl = -0.5 * tf.reduce_sum(1.0 + z_log_sigma_sq - tf.square(z_mean)
-                              - tf.exp(z_log_sigma_sq), 1)
+                              - tf.exp(z_log_sigma_sq), reduce_index)
     return [z, kl]
 
 
@@ -47,6 +48,7 @@ def gumbel_reparmeterization(logits_z, tau, rnd_sample=None, eps=1e-9):
 
     # kl = tf.reshape(p_z * (log_p_z - log_q_z),
     #                 [-1, latent_size])
+    reduce_index = [1] if len(logits_z.get_shape().as_list()) == 2 else [1, 2]
     kl = tf.reduce_sum(tf.reshape(q_z * (log_q_z - log_p_z),
-                                  [-1, latent_size]), [1])
+                                  [-1, latent_size]), reduce_index)
     return [z, kl]
