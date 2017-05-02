@@ -48,9 +48,9 @@ class VAE(object):
     See "Auto-Encoding Variational Bayes" by Kingma and Welling
     for more details on the original work.
     """
-    def __init__(self, sess, input_size, batch_size, encoder, decoder,
-                 latent_size, activation=tf.nn.softplus, learning_rate=1e-3,
-                 submodel=0, vae_tm1=None):
+    def __init__(self, sess, input_size, batch_size, latent_size,
+                 encoder, decoder, activation=tf.nn.softplus,
+                 learning_rate=1e-3, submodel=0, vae_tm1=None):
         self.activation = activation
         self.learning_rate = learning_rate
         self.encoder_model = encoder
@@ -63,7 +63,7 @@ class VAE(object):
         self.iteration = 0
         self.submodel = submodel
         # self.num_discrete = self.submodel - 1  # TBD
-        self.num_discrete = self.submodel  # TODO: add dupe detection
+        self.num_discrete = self.submodel + 1  # TODO: add dupe detection
 
         # gumbel params
         self.tau0 = 1.0
@@ -105,7 +105,7 @@ class VAE(object):
             % len(tf.trainable_variables())
 
     def _create_variables(self):
-        with tf.variablepip_scope(self.get_name()):
+        with tf.variable_scope(self.get_name()):
             # Create the placeholders if we are at the first model
             # Else simply pull the references
             if self.submodel == 0:
@@ -191,17 +191,18 @@ class VAE(object):
     '''
     def get_name(self):
         if self.submodel == 0:
-            full_hash_str = self.activation.__name__ \
-                            + "_encodersizes" + str(self.encoder_sizes) \
-                            + "_decodersizes" + str(self.decoder_sizes) \
+            full_hash_str = self.activation.__name__ + '_' \
+                            + str(self.encoder_model.get_sizing()) \
+                            + str(self.decoder_model.get_sizing()) \
                             + "_learningrate" + str(self.learning_rate) \
-                            + "_nn" + str(self.use_ln) \
-                            + "_bn" + str(self.use_bn) \
                             + "_latent size" + str(self.latent_size)
             full_hash_str = full_hash_str.strip().lower().replace('[', '')  \
                                                          .replace(']', '')  \
                                                          .replace(' ', '')  \
+                                                         .replace('{', '') \
+                                                         .replace('}', '') \
                                                          .replace(',', '_') \
+                                                         .replace(':', '') \
                                                          .replace('\'', '')
             return 'vae%d_' % self.submodel + full_hash_str
         else:
@@ -314,16 +315,23 @@ class VAE(object):
     def reparameterize(encoded, num_discrete, tau, hard=False,
                        rnd_sample=None, eps=1e-20):
         eshp = encoded.get_shape().as_list()
+        print 'esp = ', eshp
         num_normal = eshp[1] - num_discrete
+        print 'num_normal = ', num_normal
         logits_normal = encoded[:, 0:num_normal]
-        logits_gumbel = encoded[:, num_normal:eshp[0]]
+        logits_gumbel = encoded[:, num_normal:eshp[1]]
 
         # we reparameterize using both the N(0, I) and the gumbel(0, 1)
         z_discrete, kl_discrete = gumbel_reparmeterization(logits_gumbel,
                                                            tau,
                                                            rnd_sample)
         z_n, kl_n = gaussian_reparmeterization(logits_normal)
+
+        # merge and pad appropriately
+        kl_discrete = tf.concat([tf.zeros(num_normal), kl_discrete], axis=0)
+        kl_n = tf.concat([kl_n, tf.zeros(num_discrete)], axis=0)
         z = tf.concat([z_n, z_discrete], axis=1)
+
         return [slim.flatten(z),
                 slim.flatten(z_n),
                 slim.flatten(z_discrete),
@@ -424,7 +432,7 @@ class VAE(object):
             self.z_discrete, \
             self.kl_normal, \
             self.kl_discrete = self.encoder(self.x_augmented,
-                                            rnd_sample=self.rnd_sample)
+                                            rnd_sample=None)
         print 'z_encoded = ', self.z.get_shape().as_list()
 
         # reconstruct x via the generator & run activation
@@ -518,7 +526,7 @@ class VAE(object):
                 self.cost, self.cost_mean \
                 = self.vae_loss(self.x_augmented,
                                 self.x_reconstr_mean,
-                                self.latent_kl,
+                                self.kl_normal + self.kl_discrete,
                                 self.kl_consistency)
 
             # construct our optimizer
@@ -605,10 +613,22 @@ class VAE(object):
         Note: This is a slow op in tensorflow
               because the session needs to be run
         '''
-        updated_latent_size = self.latent_size  # XXX: compute this
+        updated_latent_size = self.latent_size + 1  # XXX: compute this
+        encoder = DenseEncoder(self.sess, updated_latent_size,
+                               self.is_training,
+                               use_ln=self.encoder_model.use_ln,
+                               use_bn=self.decoder_model.use_bn,
+                               activate_last_layer=False)
+        decoder = DenseEncoder(self.sess, self.input_size,
+                               self.is_training,
+                               use_ln=self.decoder_model.use_ln,
+                               use_bn=self.decoder_model.use_bn,
+                               activate_last_layer=False)
+
         vae_tp1 = VAE(self.sess, self.input_size, self.batch_size,
-                      self.encoder_model, self.decoder_model,
-                      latent_size=updated_latent_size,
+                      latent_size=self.latent_size,
+                      encoder=encoder,
+                      decoder=decoder,
                       activation=self.activation,
                       learning_rate=self.learning_rate,
                       submodel=self.submodel+1,
@@ -678,19 +698,26 @@ def build_Nd_vae(sess, source, input_shape, latent_size, batch_size, epochs=100)
     latest_model = find_latest_file("models", "vae(\d+)")
     print 'latest model = ', latest_model
 
-    # Build the full model
+    # build encoder and decoder models
+    # note: these can be externally built
+    #       as long as it works with forward()
     is_training = tf.placeholder(tf.bool)
-    encoder = DenseEncoder(sess, FLAGS.latent_size,
+    encoder = DenseEncoder(sess, 2*FLAGS.latent_size + 1,
                            is_training,
                            use_ln=FLAGS.use_ln,
                            use_bn=FLAGS.use_bn,
                            activate_last_layer=False)
-    decoder = DenseEncoder(sess, FLAGS.latent_size,
+    decoder = DenseEncoder(sess, input_shape,
                            is_training,
                            use_ln=FLAGS.use_ln,
                            use_bn=FLAGS.use_bn,
                            activate_last_layer=False)
-    vae = VAE(sess, input_shape, FLAGS.batch_size, FLAGS.latent_size,
+    print 'encoder = ', encoder.get_info()
+    print 'decoder = ', decoder.get_info()
+
+    # build the vae object
+    vae = VAE(sess, input_shape, FLAGS.batch_size,
+              latent_size=FLAGS.latent_size,
               encoder=encoder, decoder=decoder,
               learning_rate=FLAGS.learning_rate,
               submodel=latest_model[1],

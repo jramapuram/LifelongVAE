@@ -87,3 +87,9 @@ ENV/
 
 # Rope project settings
 .ropeproject
+
+# Project specific
+MNIST_data
+logs
+models
+imgs

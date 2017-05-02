@@ -10,14 +10,16 @@ def gaussian_reparmeterization(logits_z, eps=None):
     '''
     zshp = logits_z.get_shape().as_list()
     assert zshp[1] % 2 == 0
-    z_log_sigma_sq = logits_z[:, 0:zshp[0]/2]
-    z_mean = logits_z[:, zshp[0]/2:]
+    z_log_sigma_sq = logits_z[:, 0:zshp[1]/2]
+    z_mean = logits_z[:, zshp[1]/2:]
+    print 'zmean shp = ', z_mean.get_shape().as_list()
+    print 'z_log_sigma_sq shp = ', z_log_sigma_sq.get_shape().as_list()
 
     if eps is None:
         eps = tf.random_normal(tf.shape(z_mean), 0, 1,
                                dtype=tf.float32)
 
-    cov = tf.mul(tf.sqrt(tf.exp(z_log_sigma_sq)), eps)
+    cov = tf.multiply(tf.sqrt(tf.exp(z_log_sigma_sq)), eps)
     z = tf.add(z_mean, cov, name="z")
 
     kl = -0.5 * tf.reduce_sum(1.0 + z_log_sigma_sq - tf.square(z_mean)
@@ -41,7 +43,7 @@ def gumbel_reparmeterization(logits_z, tau, rnd_sample=None, eps=1e-9):
                                   hard=True,
                                   rnd_sample=rnd_sample),
                    [-1, latent_size])
-    print 'z_internal = ', z.get_shape().as_list()
+    print 'z_gumbel = ', z.get_shape().as_list()
 
     # kl = tf.reshape(p_z * (log_p_z - log_q_z),
     #                 [-1, latent_size])
