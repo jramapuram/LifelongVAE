@@ -28,7 +28,8 @@ def gaussian_reparmeterization(logits_z, eps=None):
     return [z, kl]
 
 
-def gumbel_reparmeterization(logits_z, tau, rnd_sample=None, eps=1e-9):
+def gumbel_reparmeterization(logits_z, tau, rnd_sample=None,
+                             hard=True, eps=1e-9):
     '''
     The gumbel-softmax reparameterization
     '''
@@ -41,7 +42,7 @@ def gumbel_reparmeterization(logits_z, tau, rnd_sample=None, eps=1e-9):
 
     # set hard=True for ST Gumbel-Softmax
     z = tf.reshape(gumbel_softmax(logits_z, tau,
-                                  hard=True,
+                                  hard=hard,
                                   rnd_sample=rnd_sample),
                    [-1, latent_size])
     print 'z_gumbel = ', z.get_shape().as_list()

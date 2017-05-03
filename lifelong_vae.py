@@ -33,7 +33,6 @@ flags.DEFINE_boolean("allow_soft_placement", True, "Soft device placement.")
 flags.DEFINE_float("device_percentage", "0.3", "Amount of memory to use on device.")
 flags.DEFINE_string("use_ln", "none", "encoder / decoder / encoder_decoder for layer norm")
 flags.DEFINE_string("use_bn", "none", "encoder / decoder / encoder_decoder for batch norm")
-# flags.DEFINE_float("dropout_keep_prob", 1.0, "dropout keep probability")
 flags.DEFINE_float("learning_rate", 1e-3, "learning rate")
 FLAGS = flags.FLAGS
 
@@ -96,14 +95,16 @@ class VAE(object):
         # collect variables & build saver
         self.vae_vars = [v for v in tf.global_variables()
                          if v.name.startswith(self.get_name())]
+        self.vae_local_vars = [v for v in tf.local_variables()
+                               if v.name.startswith(self.get_name())]
         self.saver = tf.train.Saver(tf.global_variables())  # XXX: use local
+        self.init_op = tf.variables_initializer(self.vae_vars + self.vae_local_vars)
 
-        self.init_op = tf.variables_initializer(self.vae_vars)
         print 'model: ', self.get_name()
-        print 'there are ', len(self.vae_vars), ' vars in ', \
-            tf.get_variable_scope().name, ' out of a total of ', \
-            len(tf.global_variables()), ' with %d total trainable vars' \
-            % len(tf.trainable_variables())
+        # print 'there are ', len(self.vae_vars), ' vars in ', \
+        #     tf.get_variable_scope().name, ' out of a total of ', \
+        #     len(tf.global_variables()), ' with %d total trainable vars' \
+        #     % len(tf.trainable_variables())
 
     def _create_variables(self):
         with tf.variable_scope(self.get_name()):
@@ -136,6 +137,7 @@ class VAE(object):
         summaries = [tf.summary.scalar("vae_loss_mean", self.cost_mean),
                      tf.summary.scalar("vae_latent_loss_mean", self.latent_loss_mean),
                      tf.summary.scalar("vae_selected_class", tf.argmax(tf.reduce_sum(self.z_discrete, 0), 0)),
+                     tf.summary.scalar("vae_selected_class_xtm1", tf.argmax(tf.reduce_sum(self.z_discrete[self.num_current_data:], 0), 0)),
                      tf.summary.histogram("vae_kl_normal", self.kl_normal),
                      tf.summary.histogram("vae_kl_discrete", self.kl_discrete),
                      tf.summary.histogram("vae_latent_dist", self.latent_kl),
@@ -166,12 +168,22 @@ class VAE(object):
         #          4) Images from previous interval
         #          5) Distilled KL Divergence
         if hasattr(self, 'xhat_tm1'):
+            with tf.variable_scope(self.get_name()):  # accuracy operator
+                # selected_classes_for_xtm1 = tf.argmax(self.z_discrete[self.num_current_data:], 0)
+                # selected_classes_by_vae_tm1 = tf.argmax(self.q_z_t_given_x_t, 0)
+                selected_classes_for_xtm1 = self.z_discrete[self.num_current_data:]
+                selected_classes_by_vae_tm1 = self.q_z_t_given_x_t
+                correct_prediction = tf.equal(tf.argmax(selected_classes_by_vae_tm1, 1),
+                                              tf.argmax(selected_classes_for_xtm1, 1))
+                self.accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+
             num_xhat_tm1 = self.xhat_tm1.get_shape().as_list()
             img_shp = [-1, 28, 28, 1]
             summaries += [tf.summary.image("xhat_tm1",
                                            tf.reshape(self.xhat_tm1, img_shp),
                                            max_outputs=num_xhat_tm1[0]),
-                          tf.summary.scalar("vae_tm1_selected_class", tf.argmax(tf.reduce_sum(self.z_discrete_tm1, 0), 0)),
+                          tf.summary.scalar("vae_tm1_selected_class", tf.argmax(tf.reduce_sum(self.q_z_t_given_x_t, 0), 0)),
+                          tf.summary.scalar("consistency_accuracy", self.accuracy),
                           tf.summary.scalar("vae_kl_distill_mean",
                                             tf.reduce_mean(self.kl_consistency))]
 
@@ -240,8 +252,8 @@ class VAE(object):
         elif p is not None and q is not None:
             print 'p shp = ', p.get_shape().as_list(), \
                 ' | q shp = ', q.get_shape().as_list()
-            Q = distributions.Categorical(p=q+eps, dtype=tf.float32)
-            P = distributions.Categorical(p=p+eps, dtype=tf.float32)
+            Q = distributions.Categorical(probs=q+eps, dtype=tf.float32)
+            P = distributions.Categorical(probs=p+eps, dtype=tf.float32)
         else:
             raise Exception("please provide either logits or dists")
 
@@ -258,7 +270,6 @@ class VAE(object):
             cat2 = tf.concat([cat2, tf.zeros([c2shp[0], diff])], axis=1)
         elif c2shp[1] > c1shp[1]:
             cat1 = tf.concat([cat1, tf.zeros([c1shp[0], diff])], axis=1)
-
         return [cat1, cat2]
 
     def _create_constraints(self):
@@ -272,11 +283,15 @@ class VAE(object):
             # Note: encode returns z, z_normal, z_discrete,
             #                      kl_normal, kl_discrete
             # Note2: discrete dimension is self.submodel
-            _, _, self.q_z_s_given_x_t, _, _ \
-                = self.encoder(self.xhat_tm1,
-                               rnd_sample=None,
-                               hard=False,  # True?
-                               reuse=True)
+            self.q_z_s_given_x_t = self.z_discrete[self.num_current_data:]
+            assert self.q_z_s_given_x_t.get_shape().as_list()[0] \
+                == self.num_old_data
+            # _, _, self.q_z_s_given_x_t, _, _ \
+            #     = self.encoder(self.xhat_tm1,
+            #                    rnd_sample=None,
+            #                    hard=False,  # True?
+            #                    reuse=True)
+
 
             # We also need to encode the data back through the teacher
             # This is necessary because we need to evaluate the posterior
@@ -290,19 +305,16 @@ class VAE(object):
 
             # Get the number of gaussians for student and teacher
             # We also only consider num_old_data of the batch
-            # qzt_shp = self.q_z_t_given_x_t.get_shape().as_list()
-            # qzs_shp = self.q_z_s_given_x_t.get_shape().as_list()
-            # ng_t = qzt_shp[0] - self.vae_tm1.num_discrete  # num gaussians(t)
-            # ng_s = qzs_shp[0] - self.num_discrete          # num gaussians(s)
-            self.q_z_s_given_x_t = self.q_z_s_given_x_t[0:self.num_old_data]
             self.q_z_t_given_x_t = self.q_z_t_given_x_t[0:self.num_old_data]
             self.q_z_s_given_x_t, self.q_z_t_given_x_t \
                 = VAE.zero_pad_smaller_cat(self.q_z_s_given_x_t,
                                            self.q_z_t_given_x_t)
 
             # Now we ONLY want eval the KL on the discrete z
-            kl = self.kl_categorical(q=self.q_z_t_given_x_t,
-                                     p=self.q_z_s_given_x_t)
+            # kl = self.kl_categorical(q=self.q_z_t_given_x_t,
+            #                          p=self.q_z_s_given_x_t)
+            kl = self.kl_categorical(q=self.q_z_s_given_x_t,
+                                     p=self.q_z_t_given_x_t)
             print 'kl_consistency [prepad] : ', kl.get_shape().as_list()
             kl = [tf.zeros([self.num_current_data]), kl]
             self.kl_consistency = tf.concat(axis=0, values=kl)
@@ -322,7 +334,8 @@ class VAE(object):
         # we reparameterize using both the N(0, I) and the gumbel(0, 1)
         z_discrete, kl_discrete = gumbel_reparmeterization(logits_gumbel,
                                                            tau,
-                                                           rnd_sample)
+                                                           rnd_sample,
+                                                           hard)
         z_n, kl_n = gaussian_reparmeterization(logits_normal)
 
         # merge and pad appropriately
@@ -476,6 +489,20 @@ class VAE(object):
     def _l2_loss(x, x_reconstr):
         return tf.square(x - x_reconstr)
 
+    @staticmethod
+    def mutual_information_bernouilli_cat(bern_logits, cat_probs, eps=1e-9):
+        '''
+        I(\hat{X} ; Z) = H(Z) - H(Z | \hat{X}) = H(\hat{X}) - H(\hat{X} | Z)
+        '''
+        p_x_given_z = distributions.Bernoulli(logits=bern_logits,
+                                              dtype=tf.float32)
+        q_z = distributions.Categorical(probs=cat_probs + eps,
+                                        dtype=tf.float32)
+        # TODO: debug traces
+        # print 'q_z_entropy = ', q_z.entropy().get_shape().as_list()
+        # print 'p_x_given_z.entropy() = ', p_x_given_z.entropy().get_shape().as_list()
+        return q_z.entropy() - tf.reduce_sum(p_x_given_z.entropy(), 1)
+
     def vae_loss(self, x, x_reconstr_mean, latent_kl, consistency_kl):
         # the loss is composed of two terms:
         # 1.) the reconstruction loss (the negative log probability
@@ -487,6 +514,10 @@ class VAE(object):
         # reconstr_loss = tf.reduce_sum(x_reconstr_mean.log_pmf(x), [1])
         reconstr_loss = self._loss_helper(x, x_reconstr_mean)
 
+        mutual_info_regularizer \
+            = VAE.mutual_information_bernouilli_cat(bern_logits=self.x_reconstr_mean,
+                                                    cat_probs=self.z_discrete)
+
         # 2.) the latent loss, which is defined as the kullback leibler divergence
         #     between the distribution in latent space induced by the encoder on
         #     the data and some prior. this acts as a kind of regularizer.
@@ -495,7 +526,7 @@ class VAE(object):
         #     the prior.
         # kl_categorical(p=none, q=none, p_logits=none, q_logits=none, eps=1e-6):
         # cost = reconstr_loss - latent_kl
-        cost = reconstr_loss + latent_kl - consistency_kl
+        cost = reconstr_loss + latent_kl + consistency_kl - mutual_info_regularizer
 
         # create the reductions only once
         latent_loss_mean = tf.reduce_mean(latent_kl)
@@ -511,13 +542,13 @@ class VAE(object):
 
         with tf.variable_scope(self.get_name() + "/loss_optimizer"):
             self.latent_kl = self.kl_normal + self.kl_discrete
-            if self.submodel > 0:
+            #if self.submodel > 0:
                 # set the indexes[batch] of the latent kl to zero for the
                 # indices that we are constraining over as we are computing
                 # a regularizer in the above function
-                zero_vals = [self.latent_kl[0:self.num_current_data],
-                             tf.zeros([self.num_old_data])]
-                self.latent_kl = tf.concat(axis=0, values=zero_vals)
+                # zero_vals = [self.latent_kl[0:self.num_current_data],
+                #              tf.zeros([self.num_old_data])]
+                # self.latent_kl = tf.concat(axis=0, values=zero_vals)
 
             # tabulate total loss
             self.reconstr_loss, self.reconstr_loss_mean, \
@@ -629,7 +660,7 @@ class VAE(object):
 
         # we want to reinit our weights and biases to their defaults
         # TODO: Evaluate whether simply copying over weights will be better
-        self.sess.run(vae_tp1.init_op)
+        self.sess.run([vae_tp1.init_op])#, vae_tp1.init_local_op])
         return vae_tp1
 
     def transform(self, X):
