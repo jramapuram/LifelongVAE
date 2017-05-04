@@ -4,9 +4,11 @@ from encoders import _get_normalizer
 
 
 class CNNDecoder(object):
-    def __init__(self, sess, latent_size, input_size, activation, is_training,
-                 use_bn=False, use_ln=False, activate_last_layer=False):
+    def __init__(self, sess, latent_size, input_size, is_training,
+                 activation=tf.nn.elu, use_bn=False, use_ln=False,
+                 activate_last_layer=False):
         self.sess = sess
+        self.layer_type = "cnn"
         self.input_size = input_size
         self.latent_size = latent_size
         self.activation = activation
@@ -23,16 +25,21 @@ class CNNDecoder(object):
                 'use_ln': str(self.use_ln),
                 'activ_last_layer': str(self.activate_last_layer)}
 
+    def get_sizing(self):
+        return str(['128x3x3', '64x5x5',
+                    '32x5x5', '1x5x5', str(self.input_size)])
+
     def get_model(self, z):
         # get the normalizer function and parameters
         normalizer_fn, normalizer_params = _get_normalizer(self.is_training,
                                                            self.use_bn,
                                                            self.use_ln)
 
-        xavier = tf.contrib.layers.xavier_initializer_conv2d()
-        with slim.arg_scope([slim.conv2d],
+        winit = tf.contrib.layers.xavier_initializer_conv2d()
+        # winit = tf.truncated_normal_initializer(stddev=0.01)
+        with slim.arg_scope([slim.conv2d_transpose],
                             activation_fn=self.activation,
-                            weights_initializer=xavier,
+                            weights_initializer=winit,
                             biases_initializer=tf.constant_initializer(0),
                             normalizer_fn=normalizer_fn,
                             normalizer_params=normalizer_params):
@@ -49,7 +56,7 @@ class CNNDecoder(object):
                                        stride=[2, 2], padding='SAME')
 
             # XXX : Force activation to sigmoid
-            if self.activate_last_layer is not None:
+            if self.activate_last_layer:
                 final_activation = tf.nn.sigmoid
             else:
                 final_activation = None

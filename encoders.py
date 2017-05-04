@@ -35,10 +35,11 @@ def forward(inputs, operator):
 
 class CNNEncoder(object):
     def __init__(self, sess, latent_size, is_training,
-                 activation=tf.nn.softplus,
+                 activation=tf.nn.elu,
                  use_bn=False, use_ln=False,
                  activate_last_layer=False):
         self.sess = sess
+        self.layer_type = "cnn"
         self.latent_size = latent_size
         self.activation = activation
         self.use_bn = use_bn
@@ -65,18 +66,20 @@ class CNNEncoder(object):
                                                            self.use_bn,
                                                            self.use_ln)
 
+        winit = tf.contrib.layers.xavier_initializer_conv2d()
+        # winit = tf.truncated_normal_initializer(stddev=0.01)
         with slim.arg_scope([slim.conv2d],
                             activation_fn=self.activation,
-                            weights_initializer=tf.contrib.layers.xavier_initializer_conv2d(),
+                            weights_initializer=winit,
                             biases_initializer=tf.constant_initializer(0),
                             normalizer_fn=normalizer_fn,
                             normalizer_params=normalizer_params):
             xshp = x.get_shape().as_list()
             x_flat = tf.reshape(x, [-1, xshp[0], xshp[1], 1])
-            h0 = slim.conv2d(x_flat, 32, [5, 5])
-            h1 = slim.conv2d(h0, 64, [5, 5])
-            h2 = slim.conv2d(h1, 128, [5, 5])
-            h2_flat = slim.flatten(h2)
+            h0 = slim.conv2d(x_flat, 32, [5, 5], stride=2)
+            h1 = slim.conv2d(h0, 64, [5, 5], stride=2)
+            #h2 = slim.conv2d(h1, 128, [5, 5], stride=2)
+            h2_flat = tf.reshape(h1, [xshp[0], -1])
 
         with slim.arg_scope([slim.fully_connected],
                             weights_initializer=tf.contrib.layers.xavier_initializer(),
@@ -91,10 +94,11 @@ class CNNEncoder(object):
 
 class DenseEncoder(object):
     def __init__(self, sess, latent_size, is_training,
-                 activation=tf.nn.softplus,
+                 activation=tf.nn.elu,
                  sizes=[512, 512], use_bn=False, use_ln=False,
                  activate_last_layer=False):
         self.sess = sess
+        self.layer_type = "dnn"
         self.latent_size = latent_size
         self.activation = activation
         self.sizes = sizes

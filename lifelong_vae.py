@@ -27,7 +27,7 @@ class VAE(object):
     for more details on the original work.
     """
     def __init__(self, sess, input_size, batch_size, latent_size,
-                 encoder, decoder, is_training, activation=tf.nn.softplus,
+                 encoder, decoder, is_training, activation=tf.nn.elu,
                  reconstr_loss_type="binary_cross_entropy",
                  learning_rate=1e-3, submodel=0, vae_tm1=None, base_dir="."):
         self.activation = activation
@@ -628,6 +628,44 @@ class VAE(object):
         with open(filename, 'a') as f:
             np.savetxt(f, self.sess.run(all_classes), delimiter=",")
 
+    def build_new_encoder_decoder_pair(self):
+        # XXX: compute this
+        updated_latent_size = 2*self.latent_size + self.num_discrete + 1
+
+        if self.encoder_model.layer_type is not 'cnn':
+            # increase the number of latent params
+            if self.submodel % 4 == 0:  # XXX
+                print 'adding extra layer...'
+                layer_sizes = self.encoder_model.sizes + [512]
+            else:
+                layer_sizes = self.encoder_model.sizes
+
+            encoder = DenseEncoder(self.sess, updated_latent_size,
+                                   self.is_training,
+                                   sizes=layer_sizes,
+                                   use_ln=self.encoder_model.use_ln,
+                                   use_bn=self.decoder_model.use_bn,
+                                   activate_last_layer=False)
+            decoder = DenseEncoder(self.sess, self.input_size,
+                                   self.is_training,
+                                   sizes=layer_sizes,
+                                   use_ln=self.decoder_model.use_ln,
+                                   use_bn=self.decoder_model.use_bn,
+                                   activate_last_layer=False)
+        else:
+            encoder = CNNEncoder(self.sess, updated_latent_size,
+                                 self.is_training,
+                                 use_ln=self.encoder_model.use_ln,
+                                 use_bn=self.decoder_model.use_bn,)
+            decoder = CNNDecoder(self.sess,
+                                 latent_size=self.latent_size + self.num_discrete + 1,
+                                 input_size=self.input_size,
+                                 is_training=self.is_training,
+                                 use_ln=self.decoder_model.use_ln,
+                                 use_bn=self.decoder_model.use_bn)
+
+        return encoder, decoder
+
     def fork(self):
         '''
         Fork the current model by copying the model parameters
@@ -636,17 +674,7 @@ class VAE(object):
         Note: This is a slow op in tensorflow
               because the session needs to be run
         '''
-        updated_latent_size = 2*self.latent_size + self.num_discrete + 1   # XXX: compute this
-        encoder = DenseEncoder(self.sess, updated_latent_size,
-                               self.is_training,
-                               use_ln=self.encoder_model.use_ln,
-                               use_bn=self.decoder_model.use_bn,
-                               activate_last_layer=False)
-        decoder = DenseEncoder(self.sess, self.input_size,
-                               self.is_training,
-                               use_ln=self.decoder_model.use_ln,
-                               use_bn=self.decoder_model.use_bn,
-                               activate_last_layer=False)
+        encoder, decoder = self.build_new_encoder_decoder_pair()
         print 'encoder = ', encoder.get_info()
         print 'decoder = ', decoder.get_info()
 
