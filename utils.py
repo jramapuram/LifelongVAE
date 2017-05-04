@@ -243,6 +243,11 @@ def min_max_normalize(X, min=0.0, max=1.0):
     return x_std * (max - min) + min
 
 
+def write_csv(arr, base_dir, filename):
+    with open("%s/%s" % (base_dir, filename), 'a') as f:
+        np.savetxt(f, arr, delimiter=",")
+
+
 def normalize(x, scale_range=True):
     if len(x.shape) == 2:
         denominator = np.expand_dims(np.clip(np.std(x, axis=1), 1e-9, 1e25), 1)

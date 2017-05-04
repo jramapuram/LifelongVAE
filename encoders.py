@@ -12,9 +12,11 @@ def _get_normalizer(is_training, use_bn, use_ln):
     layer_norm_params = {'center': True, 'scale': True}
 
     if use_ln:
+        print 'using layer norm'
         normalizer_fn = slim.layer_norm
         normalizer_params = layer_norm_params
     elif use_bn:
+        print 'using batch norm'
         normalizer_fn = slim.batch_norm
         normalizer_params = batch_norm_params
     else:

@@ -6,35 +6,14 @@ import tensorflow as tf
 import tensorflow.contrib.slim as slim
 import tensorflow.contrib.distributions as distributions
 # from tensorflow.python.training.moving_averages import weighted_moving_average
-from mnist_number import MNIST_Number, full_mnist
-from utils import *
-from reparameterizations import *
+from reparameterizations import gumbel_reparmeterization, gaussian_reparmeterization
 from encoders import forward, DenseEncoder, CNNEncoder
 from decoders import CNNDecoder
-
-import matplotlib as mpl
-mpl.use('Agg')
-import matplotlib.pyplot as plt
+from utils import *
 
 sg = tf.contrib.bayesflow.stochastic_graph
 st = tf.contrib.bayesflow.stochastic_tensor
 sys.setrecursionlimit(200)
-
-flags = tf.flags
-flags.DEFINE_string("target_dataset", "mnist", "mnist or regression.")
-flags.DEFINE_string("model_type", "gan", "gan or vae")
-flags.DEFINE_bool("sequential", 0, "sequential or not")
-flags.DEFINE_integer("latent_size", 20, "Number of latent variables.")
-flags.DEFINE_integer("epochs", 100, "Maximum number of epochs.")
-flags.DEFINE_integer("batch_size", 100, "Mini-batch size for data subsampling.")
-flags.DEFINE_integer("min_interval", 3000, "Minimum interval for specific dataset.")
-flags.DEFINE_string("device", "/gpu:0", "Compute device.")
-flags.DEFINE_boolean("allow_soft_placement", True, "Soft device placement.")
-flags.DEFINE_float("device_percentage", "0.3", "Amount of memory to use on device.")
-flags.DEFINE_string("use_ln", "none", "encoder / decoder / encoder_decoder for layer norm")
-flags.DEFINE_string("use_bn", "none", "encoder / decoder / encoder_decoder for batch norm")
-flags.DEFINE_float("learning_rate", 1e-3, "learning rate")
-FLAGS = flags.FLAGS
 
 # Global variables
 GLOBAL_ITER = 0  # keeps track of the iteration ACROSS models
@@ -48,11 +27,12 @@ class VAE(object):
     for more details on the original work.
     """
     def __init__(self, sess, input_size, batch_size, latent_size,
-                 encoder, decoder, activation=tf.nn.softplus,
+                 encoder, decoder, is_training, activation=tf.nn.softplus,
                  reconstr_loss_type="binary_cross_entropy",
-                 learning_rate=1e-3, submodel=0, vae_tm1=None):
+                 learning_rate=1e-3, submodel=0, vae_tm1=None, base_dir="."):
         self.activation = activation
         self.learning_rate = learning_rate
+        self.is_training = is_training
         self.encoder_model = encoder
         self.decoder_model = decoder
         self.vae_tm1 = vae_tm1
@@ -64,6 +44,7 @@ class VAE(object):
         self.submodel = submodel
         self.reconstr_loss_type = reconstr_loss_type
         self.num_discrete = self.submodel + 1  # TODO: add dupe detection
+        self.base_dir = base_dir  # dump all our stuff into this dir
 
         # gumbel params
         self.tau0 = 1.0
@@ -86,6 +67,9 @@ class VAE(object):
         # corresponding optimizer
         self._create_loss_optimizer()
 
+        # create the required directories to hold data for this specific model
+        self._create_local_directories()
+
         # Create all the summaries and their corresponding ops
         self._create_summaries()
 
@@ -106,17 +90,34 @@ class VAE(object):
         #     len(tf.global_variables()), ' with %d total trainable vars' \
         #     % len(tf.trainable_variables())
 
+    '''
+    Helper to create the :
+         1) models/name_time directory
+         2) imgs/name_time directory
+         3) logs/name_time directory
+    '''
+    def _create_local_directories(self):
+        models_dir = '%s/models' % (self.base_dir)
+        if not os.path.exists(models_dir):
+            os.makedirs(models_dir)
+
+        imgs_dir = '%s/imgs' % (self.base_dir)
+        if not os.path.exists(imgs_dir):
+            os.makedirs(imgs_dir)
+
+        logs_dir = '%s/logs' % (self.base_dir)
+        if not os.path.exists(logs_dir):
+            os.makedirs(logs_dir)
+
     def _create_variables(self):
         with tf.variable_scope(self.get_name()):
             # Create the placeholders if we are at the first model
             # Else simply pull the references
             if self.submodel == 0:
-                self.is_training = tf.placeholder(tf.bool, name="is_training")
                 self.x = tf.placeholder(tf.float32, shape=[self.batch_size,
                                                            self.input_size],
                                         name="input_placeholder")
             else:
-                self.is_training = self.vae_tm1.is_training
                 self.x = self.vae_tm1.x
 
             # gpu iteration count
@@ -192,10 +193,10 @@ class VAE(object):
             self.summaries = tf.summary.merge(summaries)
 
         # Write all summaries to logs, but VARY the model name AND add a TIMESTAMP
-        current_summary_name = self.get_name() + self.get_formatted_datetime()
-        self.summary_writer = tf.summary.FileWriter("logs/" + current_summary_name,
-                                                    self.sess.graph, flush_secs=60)
-
+        # current_summary_name = self.get_name() + self.get_formatted_datetime()
+        self.summary_writer = tf.summary.FileWriter("%s/logs" % self.base_dir,
+                                                    self.sess.graph,
+                                                    flush_secs=60)
 
     '''
     A helper function to format the name as a function of the hyper-parameters
@@ -227,12 +228,12 @@ class VAE(object):
                                            .replace(":", "_")
 
     def save(self):
-        model_filename = "models/%s.cpkt" % self.get_name()
+        model_filename = "%s/models/%s.cpkt" % (self.base_dir, self.get_name())
         print 'saving vae model to %s...' % model_filename
         self.saver.save(self.sess, model_filename)
 
     def restore(self):
-        model_filename = "models/%s.cpkt" % self.get_name()
+        model_filename = "%s/models/%s.cpkt" % (self.base_dir, self.get_name())
         print 'into restore, model name = ', model_filename
         if os.path.isfile(model_filename):
             print 'restoring vae model from %s...' % model_filename
@@ -311,10 +312,10 @@ class VAE(object):
                                            self.q_z_t_given_x_t)
 
             # Now we ONLY want eval the KL on the discrete z
-            # kl = self.kl_categorical(q=self.q_z_t_given_x_t,
-            #                          p=self.q_z_s_given_x_t)
-            kl = self.kl_categorical(q=self.q_z_s_given_x_t,
-                                     p=self.q_z_t_given_x_t)
+            kl = self.kl_categorical(q=self.q_z_t_given_x_t,
+                                     p=self.q_z_s_given_x_t)
+            # kl = self.kl_categorical(q=self.q_z_s_given_x_t,
+            #                          p=self.q_z_t_given_x_t)
             print 'kl_consistency [prepad] : ', kl.get_shape().as_list()
             kl = [tf.zeros([self.num_current_data]), kl]
             self.kl_consistency = tf.concat(axis=0, values=kl)
@@ -526,7 +527,7 @@ class VAE(object):
         #     the prior.
         # kl_categorical(p=none, q=none, p_logits=none, q_logits=none, eps=1e-6):
         # cost = reconstr_loss - latent_kl
-        cost = reconstr_loss + latent_kl + consistency_kl - mutual_info_regularizer
+        cost = reconstr_loss + latent_kl + consistency_kl #- mutual_info_regularizer
 
         # create the reductions only once
         latent_loss_mean = tf.reduce_mean(latent_kl)
@@ -542,13 +543,13 @@ class VAE(object):
 
         with tf.variable_scope(self.get_name() + "/loss_optimizer"):
             self.latent_kl = self.kl_normal + self.kl_discrete
-            #if self.submodel > 0:
-                # set the indexes[batch] of the latent kl to zero for the
-                # indices that we are constraining over as we are computing
-                # a regularizer in the above function
-                # zero_vals = [self.latent_kl[0:self.num_current_data],
-                #              tf.zeros([self.num_old_data])]
-                # self.latent_kl = tf.concat(axis=0, values=zero_vals)
+            # if self.submodel > 0:
+            #     set the indexes[batch] of the latent kl to zero for the
+            #     indices that we are constraining over as we are computing
+            #     a regularizer in the above function
+            #     zero_vals = [self.latent_kl[0:self.num_current_data],
+            #                  tf.zeros([self.num_old_data])]
+            #     self.latent_kl = tf.concat(axis=0, values=zero_vals)
 
             # tabulate total loss
             self.reconstr_loss, self.reconstr_loss_mean, \
@@ -649,14 +650,18 @@ class VAE(object):
         print 'encoder = ', encoder.get_info()
         print 'decoder = ', decoder.get_info()
 
-        vae_tp1 = VAE(self.sess, self.input_size, self.batch_size,
+        vae_tp1 = VAE(self.sess,
+                      input_size=self.input_size,
+                      batch_size=self.batch_size,
                       latent_size=self.latent_size,
                       encoder=encoder,
                       decoder=decoder,
+                      is_training=self.is_training,
                       activation=self.activation,
                       learning_rate=self.learning_rate,
                       submodel=self.submodel+1,
-                      vae_tm1=self)
+                      vae_tm1=self,
+                      base_dir=self.base_dir)
 
         # we want to reinit our weights and biases to their defaults
         # TODO: Evaluate whether simply copying over weights will be better
@@ -688,9 +693,17 @@ class VAE(object):
                                         self.tau: self.tau_host,
                                         self.is_training: False})
 
-    def reconstruct(self, X):
+    def reconstruct(self, X, return_losses=False):
         """ Use VAE to reconstruct given data. """
-        return self.sess.run(self.x_reconstr_mean_activ,
+        if return_losses:
+            ops = [self.x_reconstr_mean_activ,
+                   self.reconstr_loss, self.reconstr_loss_mean,
+                   self.latent_kl, self.latent_loss_mean,
+                   self.cost, self.cost_mean]
+        else:
+            ops = self.x_reconstr_mean_activ
+
+        return self.sess.run(ops,
                              feed_dict={self.x: X,
                                         self.tau: self.tau_host,
                                         self.is_training: False})
@@ -716,318 +729,3 @@ class VAE(object):
                     "avg cost = ", "{:.4f} | ".format(avg_cost), \
                     "latent cost = ", "{:.4f} | ".format(latent_cost), \
                     "recon cost = ", "{:.4f}".format(recon_cost)
-
-def build_Nd_vae(sess, source, input_shape, latent_size, batch_size, epochs=100):
-    latest_model = find_latest_file("models", "vae(\d+)")
-    print 'latest model = ', latest_model
-
-    # build encoder and decoder models
-    # note: these can be externally built
-    #       as long as it works with forward()
-    is_training = tf.placeholder(tf.bool)
-    encoder = DenseEncoder(sess, 2*FLAGS.latent_size + 1,
-                           is_training,
-                           use_ln=FLAGS.use_ln,
-                           use_bn=FLAGS.use_bn,
-                           activate_last_layer=False)
-    decoder = DenseEncoder(sess, input_shape,
-                           is_training,
-                           use_ln=FLAGS.use_ln,
-                           use_bn=FLAGS.use_bn,
-                           activate_last_layer=False)
-    print 'encoder = ', encoder.get_info()
-    print 'decoder = ', decoder.get_info()
-
-    # build the vae object
-    vae = VAE(sess, input_shape, FLAGS.batch_size,
-              latent_size=FLAGS.latent_size,
-              encoder=encoder, decoder=decoder,
-              learning_rate=FLAGS.learning_rate,
-              submodel=latest_model[1],
-              vae_tm1=None)
-
-    model_filename = "models/%s" % latest_model[0]
-    is_forked = False
-
-    if os.path.isfile(model_filename):
-        vae.restore()
-    else:
-        # initialize all the variables
-        sess.run(tf.global_variables_initializer())
-
-        try:
-            if FLAGS.target_dataset == "mnist" and not FLAGS.sequential:
-                vae.train(source[0], batch_size, display_step=1, training_epochs=epochs)
-            else:
-                current_model = 0
-                for epoch in range(int(1e6)):
-                    # fork if we get a new model
-                    prev_model = current_model
-                    inputs, outputs, indexes, current_model \
-                        = generate_train_data(source,
-                                              batch_size,
-                                              batch_size,
-                                              current_model)
-                    if prev_model != current_model:
-                        previous_data, _, _ = _generate_from_index(source, [prev_model]*batch_size)
-                        # plt.figure()
-                        # plt.imshow(previous_data[0].reshape(28, 28))
-                        # plt.savefig("imgs/x_tm1.png", bbox_inches='tight')
-                        vae = vae.fork()
-                        is_forked = True
-
-                    for start, end in zip(range(0, len(inputs) + 1, batch_size),
-                                          range(batch_size, len(inputs) + 1, batch_size)):
-                        #x = np.hstack([inputs[start:end], outputs[start:end]])
-                        x = outputs[start:end] if FLAGS.target_dataset == "regression" else inputs[start:end]
-                        loss, rloss, lloss = vae.partial_fit(x, is_forked=is_forked)
-                        print 'loss[total_iter=%d][iter=%d][model=%d] = %f, latent loss = %f, reconstr loss = %f' \
-                            % (epoch, vae.iteration, current_model, loss, lloss,
-                               rloss if rloss is not None else 0.0)
-
-        except KeyboardInterrupt:
-            print "caught keyboard exception..."
-
-        vae.save()
-
-    return vae
-
-# show clustering in 2d
-def plot_2d_vae(sess, x_sample, y_sample, vae, batch_size):
-    x_sample = np.asarray(x_sample)
-    y_sample = np.asarray(y_sample)
-    print 'xs = ', x_sample.shape, ' | ys = ', y_sample.shape
-
-    z_mu = []
-    for start, end in zip(range(0, y_sample.shape[0] + 1, batch_size), \
-                          range(batch_size, y_sample.shape[0] + 1, batch_size)):
-        z_mu.append(vae.transform(x_sample[start:end]))
-
-    z_mu = np.vstack(z_mu)
-    # z_mu, c = reject_outliers(np.vstack(z_mu), np.argmax(y_sample, 1))
-    # print 'zmus = ', z_mu.shape, ' c = ', c.shape
-
-    plt.figure(figsize=(8, 6))
-
-    # plt.ylim(-0.25, 0.25)
-    # plt.xlim(-0.25, 0.25)
-
-    if FLAGS.target_dataset == "mnist":
-        #plt.scatter(z_mu[:, 0], z_mu[:, 1], c=c) # for reject_outliers
-        c = np.argmax(y_sample, 1) if len(y_sample.shape) > 1 else y_sample
-        plt.scatter(z_mu[:, 0], z_mu[:, 1], c=c)
-    elif FLAGS.target_dataset == "regression":
-        plt.scatter(z_mu[:, 0], z_mu[:, 1], c=y_sample)
-        plt.colorbar()
-        plt.savefig("imgs/2d_cluster_orig_%s.png" % vae.get_name(),
-                    bbox_inches='tight')
-
-    plt.colorbar()
-    plt.savefig("imgs/2d_cluster_%s.png" % vae.get_name(),
-                bbox_inches='tight')
-    plt.show()
-
-def _write_images(x_sample, x_reconstruct, vae_name, filename=None, num_print=5, sup_title=None):
-    fig = plt.figure(figsize=(8, 12))
-    if sup_title:
-        fig.suptitle(sup_title)
-
-    for i in range(num_print):
-        if x_sample is not None:
-            plt.subplot(num_print, 2, 2*i + 1)
-            plt.imshow(x_sample[i].reshape(28, 28), vmin=0, vmax=1)
-            plt.title("Test input")
-            plt.colorbar()
-
-        plt.subplot(num_print, 2, 2*i + 2)
-        plt.imshow(x_reconstruct[i].reshape(28, 28), vmin=0, vmax=1)
-        plt.title("Reconstruction")
-        plt.colorbar()
-
-    if filename is None:
-        plt.savefig("imgs/20d_reconstr_%d_%s.png" % (i, vae_name), bbox_inches='tight')
-    else:
-        plt.savefig(filename, bbox_inches='tight')
-
-    plt.close()
-
-
-def plot_ND_vae_inference(sess, vae, batch_size, num_write=10):
-    z_generated = generate_random_categorical(FLAGS.latent_size, batch_size)
-    vae_i = vae; current_vae = 0
-    while vae_i is not None: # do this for all the forked VAE's
-        x_reconstruct = vae_i.generate(z_mu=z_generated)
-        for x,z in zip(x_reconstruct[0:num_write], z_generated[0:num_write]): # only write num_write images
-            #current_pred_str = '_'.join(map(str, index_of_generation))
-            current_pred_str = '_atindex' + str(np.argwhere(z)[0][0])
-            plt.figure()
-            plt.title(current_pred_str)
-            plt.imshow(x.reshape(28, 28), vmin=0, vmax=1)
-            plt.colorbar()
-            plt.savefig("imgs/vae_%d_inference_%s.png" % (current_vae, current_pred_str),
-                        bbox_inches='tight')
-            plt.close()
-            print 'z_generated[vae# %d] = %s' % (current_vae, current_pred_str)
-
-        vae_i = vae_i.vae_tm1
-        current_vae += 1
-
-def find_root_vae(vae_i):
-    root_vae = vae_i
-    while root_vae and root_vae.vae_tm1:
-        root_vae = root_vae.vae_tm1
-
-    return root_vae
-
-# plot the evaluation of all the models on the provided running Z logits
-def plot_vae_consistency(sess, vae, z_test, z_from, batch_size, num_write=5):
-    vae_i = vae
-
-    while vae_i is not None: # do this for all the forked VAE's
-        x_reconstruct = vae_i.generate(z=z_test)
-        consistency_str = '%d_consistency_using_zavg_from_%s' % (vae_i.submodel, z_from)
-        _write_images(x_sample=None,
-                      x_reconstruct=x_reconstruct,
-                      vae_name=None,
-                      filename="imgs/vae_%s.png" % consistency_str,
-                      num_print=num_write,
-                      sup_title=consistency_str)
-
-        # for x in x_reconstruct[0:num_write]: # only write num_write images
-        #     consistency_str = '%d_consistency_using_zavg_from_%s' % (vae_i.submodel, z_from)
-
-        #     plt.figure()
-        #     plt.title(consistency_str)
-        #     plt.imshow(x.reshape(28, 28), vmin=0, vmax=1)
-        #     plt.colorbar()
-        #     plt.savefig("imgs/consistency/vae_%s.png" % (consistency_str),
-        #                 bbox_inches='tight')
-        #     plt.close()
-
-        vae_i = vae_i.vae_tm1
-
-    # show reconstruction
-def plot_Nd_vae(sess, source, vae, batch_size):
-    if FLAGS.target_dataset == "mnist" and not FLAGS.sequential:
-        x_sample = source[0].test.next_batch(batch_size)[0]
-        x_reconstruct = vae.reconstruct(x_sample)
-    elif FLAGS.target_dataset == "mnist" and FLAGS.sequential:
-        from tensorflow.examples.tutorials.mnist import input_data
-        x_sample = input_data.read_data_sets('MNIST_data', one_hot=True).test.next_batch(batch_size)[0]
-        x_reconstruct = vae.reconstruct(x_sample)
-        x_reconstruct_tm1 = []
-        vae_tm1 = vae.vae_tm1
-        while vae_tm1 is not None:
-            x_reconstruct_tm1.append([vae_tm1.reconstruct(x_sample), vae_tm1.get_name()])
-            vae_tm1 = vae_tm1.vae_tm1
-    else:
-        x_sample, y_sample, indexes = generate_test_data(source, batch_size, FLAGS.batch_size)
-        x = y_sample
-        x_reconstruct = vae.reconstruct(x)
-
-    _write_images(x_sample, x_reconstruct, vae.get_name())
-    for x_r_tm1, name_tm1 in x_reconstruct_tm1:
-        _write_images(x_sample, x_r_tm1, name_tm1)
-
-def create_indexes(num_train, num_models, current_model):
-    global TRAIN_ITER
-    global GLOBAL_ITER
-    if np.random.randint(0, FLAGS.batch_size * 13) == 2 and TRAIN_ITER > FLAGS.min_interval: # XXX: const 5k
-        #current_model = np.random.randint(0, num_models)
-        current_model += 1 if current_model < num_models - 1 else 0
-        TRAIN_ITER = 0
-
-    GLOBAL_ITER += 1
-    TRAIN_ITER += 1
-
-    return current_model, [current_model] * num_train
-
-def _generate_from_index(generators, gen_indexes):
-    try:
-        full_data = [generators[t].get_batch_iter(1) for t in gen_indexes]
-        inputs = np.vstack([t[0] for t in full_data])
-        outputs = np.vstack([t[1] for t in full_data])
-        return inputs, outputs, gen_indexes
-    except Exception as e:
-        print 'caught exception in gen_from_index: ', e
-        print 'len generators = %d | t = %d' % (len(generators), t)
-
-
-def generate_train_data(generators, num_train, batch_size, current_model):
-    current_model, indexes = create_indexes(num_train, len(generators), current_model)
-    num_batches = int(np.floor(len(indexes) / batch_size))
-    indexes = indexes[0:num_batches * batch_size] # dump extra data
-    inputs, outputs, _ = _generate_from_index(generators, indexes)
-    return inputs, outputs, indexes, current_model
-
-def generate_test_data(generators, num_train, batch_size):
-    indexes = list(np.arange(len(generators))) * num_train
-    num_batches = int(np.floor(len(indexes) / batch_size))
-    indexes = indexes[0:num_batches * batch_size] # dump extra data
-    return _generate_from_index(generators, indexes)
-
-def main():
-    if FLAGS.target_dataset == "mnist":
-        from tensorflow.examples.tutorials.mnist import input_data
-        generators = [MNIST_Number(i, full_mnist, False) for i in xrange(10)] if FLAGS.sequential  \
-                     else [input_data.read_data_sets('MNIST_data', one_hot=True)]
-
-        input_shape = full_mnist.train.images.shape[1]
-    elif FLAGS.target_dataset == "regression":
-        #input_shape = 128 * 2
-        input_shape = 128
-        generators = [RegressionGenerator(w, 128, sequential=False) for w in regression_keys]
-
-    # model storage
-    if not os.path.exists('models'):
-        os.makedirs('models')
-
-    # img storage
-    if not os.path.exists('imgs'):
-        os.makedirs('imgs')
-
-    with tf.device(FLAGS.device):
-        gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=FLAGS.device_percentage)
-        with tf.Session(config=tf.ConfigProto(allow_soft_placement=FLAGS.allow_soft_placement,
-                                              gpu_options=gpu_options)) as sess:
-            vae = build_Nd_vae(sess, generators,
-                               input_shape,
-                               FLAGS.latent_size,
-                               FLAGS.batch_size,
-                               epochs=FLAGS.epochs)
-
-            # run a test inference and verify
-            if FLAGS.target_dataset == "mnist" and FLAGS.sequential:
-                for g, i in zip(generators, range(len(generators))):
-                    x_sample, y_sample = g.get_test_batch_iter(FLAGS.batch_size)
-                    latent_projection = vae.transform(x_sample)
-
-                # print '\n############### Testing generation on [%d] #####################' % vae.submodel
-                # plot_ND_vae_inference(sess, vae, FLAGS.batch_size)
-                # print '#################################################################'
-            else:
-                for i in range(100):
-                    x_sample, y_sample = generators[0].test.next_batch(FLAGS.batch_size)
-                    latent_projection = vae.transform(x_sample)
-                    print 'full latent projection = ', latent_projection.shape
-                    print 'predicted[%d][class = %s] = ' % (i, str(y_sample[0])), latent_projection[0]
-
-
-            # 2d plot shows a cluster plot vs. a reconstruction plot
-            if FLAGS.latent_size == 2:
-                if FLAGS.target_dataset == "mnist" and not FLAGS.sequential:
-                    x_sample, y_sample = generators[0].test.next_batch(10000)
-                    plot_2d_vae(sess, x_sample, y_sample, vae, FLAGS.batch_size)
-                elif FLAGS.target_dataset == "mnist" and FLAGS.sequential:
-                    x_sample, y_sample = input_data.read_data_sets('MNIST_data', one_hot=True).test.next_batch(10000)
-                    #x_sample, y_sample = generators[0].get_test_batch_iter(1000)
-                    plot_2d_vae(sess, x_sample, y_sample, vae, FLAGS.batch_size)
-                elif FLAGS.target_dataset == "regression":
-                    # [inputs, outputs, indexes]
-                    x_sample, y_sample, indexes = generate_test_data(generators, 10000, FLAGS.batch_size)
-                    plot_2d_vae(sess, y_sample, indexes, vae, FLAGS.batch_size)
-            else:
-                plot_Nd_vae(sess, generators, vae, FLAGS.batch_size)
-
-if __name__ == "__main__":
-    main()
