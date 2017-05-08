@@ -2,7 +2,7 @@ import tensorflow as tf
 from utils import gumbel_softmax
 
 
-def gaussian_reparmeterization(logits_z, eps=None):
+def gaussian_reparmeterization(logits_z, rnd_sample=None):
     '''
     The vanilla gaussian reparameterization from Kingma et. al
 
@@ -15,11 +15,11 @@ def gaussian_reparmeterization(logits_z, eps=None):
     print 'zmean shp = ', z_mean.get_shape().as_list()
     print 'z_log_sigma_sq shp = ', z_log_sigma_sq.get_shape().as_list()
 
-    if eps is None:
-        eps = tf.random_normal(tf.shape(z_mean), 0, 1,
-                               dtype=tf.float32)
+    if rnd_sample is None:
+        rnd_sample = tf.random_normal(tf.shape(z_mean), 0, 1,
+                                      dtype=tf.float32)
 
-    cov = tf.multiply(tf.sqrt(tf.exp(z_log_sigma_sq)), eps)
+    cov = tf.multiply(tf.sqrt(tf.exp(z_log_sigma_sq)), rnd_sample)
     z = tf.add(z_mean, cov, name="z")
 
     reduce_index = [1] if len(zshp) == 2 else [1, 2]

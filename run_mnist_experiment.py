@@ -10,6 +10,7 @@ import numpy as np
 import tensorflow.contrib.distributions as distributions
 from mnist_number import MNIST_Number, full_mnist
 from lifelong_vae import VAE
+from vanilla_vae import VanillaVAE
 from encoders import DenseEncoder, CNNEncoder
 from decoders import CNNDecoder
 from utils import *
@@ -28,7 +29,10 @@ flags.DEFINE_float("device_percentage", "0.3", "Amount of memory to use on devic
 # flags.DEFINE_string("use_bn", "none", "encoder / decoder / encoder_decoder for batch norm")
 flags.DEFINE_string("use_ln", False, "use layer norm")
 flags.DEFINE_string("use_bn", False, "use batch norm")
+flags.DEFINE_string("reparam_type", "continuous", "reparameterization type for vanilla VAE")
 flags.DEFINE_float("learning_rate", 1e-3, "learning rate")
+flags.DEFINE_string("base_dir", ".", "base dir to store experiments")
+flags.DEFINE_bool("rotate_mnist", 0, "if true adds 10x+1 rotated versions of MNIST [for seq only]")
 FLAGS = flags.FLAGS
 
 # Global variables
@@ -53,7 +57,8 @@ def _find_latest_experiment_number(base_name):
 
 def build_Nd_vae(sess, source, input_shape, latent_size,
                  batch_size, epochs=100):
-    base_name = "experiment"
+    base_name = os.path.join(FLAGS.base_dir, "experiment")
+    print 'base_name = ', base_name
     current_model = _find_latest_experiment_number(base_name)
     if current_model != -1:
         print "\nWARNING: old experiment found, but restoring is currently bugged, training new..\n"
@@ -70,39 +75,45 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
     # note: these can be externally built
     #       as long as it works with forward()
     is_training = tf.placeholder(tf.bool)
-    # encoder = DenseEncoder(sess, 2*FLAGS.latent_size + 1,
-    #                        is_training,
-    #                        use_ln=FLAGS.use_ln,
-    #                        use_bn=FLAGS.use_bn,
-    #                        activate_last_layer=False)
-    # decoder = DenseEncoder(sess, input_shape,
-    #                        is_training,
-    #                        use_ln=FLAGS.use_ln,
-    #                        use_bn=FLAGS.use_bn,
-    #                        activate_last_layer=False)
-    encoder = CNNEncoder(sess, 2*FLAGS.latent_size + 1,
-                         is_training,
-                         use_ln=FLAGS.use_ln,
-                         use_bn=FLAGS.use_bn)
-    decoder = CNNDecoder(sess,
-                         latent_size=FLAGS.latent_size + 1,
-                         input_size=input_shape,
-                         is_training=is_training,
-                         use_ln=FLAGS.use_ln,
-                         use_bn=FLAGS.use_bn)
+    latent_size = 2*FLAGS.latent_size + 1 if FLAGS.sequential \
+                  else 2*FLAGS.latent_size
+    encoder = DenseEncoder(sess, latent_size,
+                           is_training,
+                           use_ln=FLAGS.use_ln,
+                           use_bn=FLAGS.use_bn,
+                           activate_last_layer=False)
+    decoder = DenseEncoder(sess, input_shape,
+                           is_training,
+                           use_ln=FLAGS.use_ln,
+                           use_bn=FLAGS.use_bn,
+                           activate_last_layer=False)
+    # encoder = CNNEncoder(sess, latent_size
+    #                      is_training,
+    #                      use_ln=FLAGS.use_ln,
+    #                      use_bn=FLAGS.use_bn)
+    # decoder_latent_size = FLAGS.latent_size + 1 if FLAGS.sequential \
+    #    else FLAGS.latent_size,
+    # decoder = CNNDecoder(sess,
+    #                      latent_size=decoder_latent_size,
+    #                      input_size=input_shape,
+    #                      is_training=is_training,
+    #                      use_ln=FLAGS.use_ln,
+    #                      use_bn=FLAGS.use_bn)
 
     print 'encoder = ', encoder.get_info()
     print 'decoder = ', decoder.get_info()
 
     # build the vae object
-    vae = VAE(sess, input_size=input_shape,
-              batch_size=FLAGS.batch_size,
-              latent_size=FLAGS.latent_size,
-              encoder=encoder, decoder=decoder,
-              is_training=is_training,
-              learning_rate=FLAGS.learning_rate,
-              submodel=latest_model[1],
-              vae_tm1=None, base_dir=base_name)
+    VAEObj = VAE if FLAGS.sequential else VanillaVAE
+    vae = VAEObj(sess, input_size=input_shape,
+                 batch_size=FLAGS.batch_size,
+                 latent_size=FLAGS.latent_size,
+                 encoder=encoder, decoder=decoder,
+                 is_training=is_training,
+                 learning_rate=FLAGS.learning_rate,
+                 submodel=latest_model[1],
+                 vae_tm1=None, base_dir=base_name,
+                 reparam_type=FLAGS.reparam_type)
 
     model_filename = "%s/models/%s" % (base_name, latest_model[0])
     is_forked = False
@@ -110,14 +121,24 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
     if os.path.isfile(model_filename):
         vae.restore()
     else:
-
         sess.run([tf.global_variables_initializer(),
                   tf.local_variables_initializer()])
+
+        # contain all the losses for runs
+        mean_loss = []
+        mean_recon = []
+        mean_latent = []
 
         try:
             if not FLAGS.sequential:
                 vae.train(source[0], batch_size, display_step=1,
                           training_epochs=epochs)
+                mean_t, mean_recon_t, mean_latent_t, _, _, _ \
+                    = evaluate_reconstr_loss_mnist(sess, vae,
+                                                   batch_size)
+                mean_loss += [mean_t]
+                mean_latent += [mean_latent_t]
+                mean_recon += [mean_recon_t]
             else:
                 current_model = 0
                 total_iter = 0
@@ -131,8 +152,17 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                                               batch_size,
                                               batch_size,
                                               current_model)
+
                     # Distribution shift Swapping logic
                     if prev_model != current_model:
+                        # save away the current test set loss
+                        mean_t, mean_recon_t, mean_latent_t, _, _, _ \
+                            = evaluate_reconstr_loss_mnist(sess, vae,
+                                                           batch_size)
+                        mean_loss += [mean_t]
+                        mean_latent += [mean_latent_t]
+                        mean_recon += [mean_recon_t]
+
                         # for the purposes of this experiment we end
                         # if we reach max_dist_swaps
                         if len(all_models) > FLAGS.max_dist_swaps:
@@ -160,10 +190,13 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
             print "caught keyboard exception..."
 
         vae.save()
-        np.savetxt("%s/models/class_list.csv" % vae.base_dir,
-                   all_models,
-                   delimiter=",")
-        print 'All seen models: ', all_models
+        if FLAGS.sequential:
+            np.savetxt("%s/models/class_list.csv" % vae.base_dir,
+                       all_models,
+                       delimiter=",")
+            print 'All seen models: ', all_models
+
+        write_all_losses(vae.base_dir, mean_loss, mean_recon, mean_latent)
 
     return vae
 
@@ -240,10 +273,11 @@ def plot_ND_vae_consistency(sess, vae, batch_size, num_write=3):
             plt.title(current_gen_str)
             plt.imshow(generated[i].reshape(28, 28), vmin=0, vmax=1)
             plt.colorbar()
-            plt.savefig("%s/imgs/vae_%d_consistency_%s.png"
+            plt.savefig("%s/imgs/vae_%d_consistency_%s_num%d.png"
                         % (vae.base_dir,
                            vae.submodel,
-                           current_gen_str),
+                           current_gen_str,
+                           i),
                         bbox_inches='tight')
             plt.close()
 
@@ -311,22 +345,27 @@ def evaluate_reconstr_loss_mnist(sess, vae, batch_size):
     mean_recon_loss = np.sum(recon_loss_t) * (1.0 / num_batches)
     mean_latent_loss = np.sum(latent_loss_t) * (1.0 / num_batches)
 
-    print 'Mean losses [VAE %d] = ELBO: %f | Reconstruction: %f | LatentKL: %f' \
-        % (vae.submodel, mean_loss, mean_recon_loss, mean_latent_loss)
+    submodel = vae.submodel if FLAGS.sequential else 0
+    print 'Mean losses [VAE %d] = ELBO: %f | Reconstruction: %f | LatentKL: %f'\
+        % (submodel, mean_loss, mean_recon_loss, mean_latent_loss)
 
-    write_csv(np.array([mean_loss]),
-              vae.base_dir,
-              "models/test_loss_mean.csv")
-    write_csv(np.array([mean_recon_loss]),
-              vae.base_dir,
-              "models/test_recon_loss_mean.csv")
-    write_csv(np.array([mean_latent_loss]),
-              vae.base_dir,
-              "models/test_latent_loss_mean.csv")
+    return mean_loss, mean_recon_loss, mean_latent_loss,\
+        loss_t, recon_loss_t, latent_loss_t
 
-    write_csv(loss_t, vae.base_dir, "models/test_loss.csv")
-    write_csv(recon_loss_t, vae.base_dir, "models/test_recon_loss.csv")
-    write_csv(latent_loss_t, vae.base_dir, "models/test_latent_loss.csv")
+
+def write_all_losses(base_dir, loss_t, recon_loss_t, latent_loss_t):
+    # write_csv(np.array([mean_loss]),
+    #           base_dir,
+    #           "models/test_loss_mean.csv")
+    # write_csv(np.array([mean_recon_loss]),
+    #           base_dir,
+    #           "models/test_recon_loss_mean.csv")
+    # write_csv(np.array([mean_latent_loss]),
+    #           base_dir,
+    #           "models/test_latent_loss_mean.csv")
+    write_csv(loss_t, base_dir, "models/test_loss.csv")
+    write_csv(recon_loss_t, base_dir, "models/test_recon_loss.csv")
+    write_csv(latent_loss_t, base_dir, "models/test_latent_loss.csv")
 
 
 def plot_Nd_vae(sess, source, vae, batch_size):
@@ -351,10 +390,11 @@ def plot_Nd_vae(sess, source, vae, batch_size):
                                                             vae.get_name()))
 
     # write all recursive
-    for x_r_tm1, name_tm1 in x_reconstruct_tm1:
-        _write_images(x_sample, x_r_tm1, name_tm1,
-                      filename="%s/imgs/20d_reconstr_%s.png" % (vae.base_dir,
-                                                                name_tm1))
+    if FLAGS.sequential:
+        for x_r_tm1, name_tm1 in x_reconstruct_tm1:
+            _write_images(x_sample, x_r_tm1, name_tm1,
+                          filename="%s/imgs/20d_reconstr_%s.png"
+                          % (vae.base_dir, name_tm1))
 
 
 def create_indexes(num_train, num_models, current_model):
@@ -362,8 +402,8 @@ def create_indexes(num_train, num_models, current_model):
     global GLOBAL_ITER
     if np.random.randint(0, FLAGS.batch_size * 13) == 2 \
        and TRAIN_ITER > FLAGS.min_interval:  # XXX: const 5k
-        # current_model = np.random.randint(0, num_models)
-        current_model += 1 if current_model < num_models - 1 else 0
+        current_model = np.random.randint(0, num_models)
+        #current_model += 1 if current_model < num_models - 1 else 0
         TRAIN_ITER = 0
 
     GLOBAL_ITER += 1
@@ -397,6 +437,7 @@ def generate_test_data(generators, num_train, batch_size):
     indexes = indexes[0:num_batches * batch_size] # dump extra data
     return _generate_from_index(generators, indexes)
 
+
 def evaluate_running_hist(vae):
     vae_t = vae
     current_vae = 0
@@ -405,22 +446,32 @@ def evaluate_running_hist(vae):
         vae_t = vae_t.vae_tm1
         current_vae += 1
 
+
+def rotate_mnist(generators):
+    ''' rotates mnist to the angles specified below
+        adds (10x + 1) the number of distributions'''
+    rotated = []
+    for n in xrange(len(generators)):
+        for t in [30, 45, 70, 90, 130, 165, 200, 250, 295, 335]:
+            number = MNIST_Number(n, full_mnist, False)
+            number.mnist = MNIST_Number.rotate_all_sets(number.mnist, t)
+            rotated.append(number)
+
+    generators = generators + rotated
+    print 'rotated generators length = ', len(generators)
+    return generators
+
+
 def main():
     from tensorflow.examples.tutorials.mnist import input_data
-    generators = [MNIST_Number(i, full_mnist, False) for i in xrange(10)] if FLAGS.sequential  \
-                 else [input_data.read_data_sets('MNIST_data', one_hot=True)]
+    if FLAGS.sequential:
+        generators = [MNIST_Number(i, full_mnist, False) for i in xrange(10)]
+    else:
+        generators = [input_data.read_data_sets('MNIST_data', one_hot=True)]
 
-    # add permutations, XXX: parameterize
-    # if FLAGS.sequential:
-    #     rotated = []
-    #     for n in xrange(len(generators)):
-    #         for t in [30, 45, 70, 90, 130, 165, 200, 250, 295, 335]:
-    #             number = MNIST_Number(n, full_mnist, False)
-    #             number.mnist = MNIST_Number.rotate_all_sets(number.mnist, t)
-    #             rotated.append(number)
-
-    #     generators = generators + rotated
-    #     print 'rotated generators length = ', len(generators)
+    # rotate mnist if specified
+    if FLAGS.rotate_mnist:
+        generators = rotate_mnist(generators)
 
     input_shape = full_mnist.train.images.shape[1]
 
@@ -448,28 +499,19 @@ def main():
                 evaluate_reconstr_loss_mnist(sess,
                                              vae,
                                              FLAGS.batch_size)
-            else:
-                for i in range(100):
-                    x_sample, y_sample = generators[0].test.next_batch(FLAGS.batch_size)
-                    latent_projection = vae.transform(x_sample)
-                    print 'full latent projection = ', latent_projection.shape
-                    print 'predicted[%d][class = %s] = ' % (i, str(y_sample[0])), latent_projection[0]
-
 
             # 2d plot shows a cluster plot vs. a reconstruction plot
             if FLAGS.latent_size == 2:
                 if not FLAGS.sequential:
                     x_sample, y_sample = generators[0].test.next_batch(10000)
-                    plot_2d_vae(sess, x_sample, y_sample,
-                                vae, FLAGS.batch_size)
                 elif FLAGS.sequential:
-                    x_sample, y_sample = input_data.read_data_sets('MNIST_data',
-                                                                   one_hot=True)\
-                                                   .test.next_batch(10000)
-                    # x_sample, y_sample = generators[0].get_test_batch_iter(1000)
-                    plot_2d_vae(sess, x_sample, y_sample,
-                                vae, FLAGS.batch_size)
+                    x_sample, y_sample \
+                        = input_data.read_data_sets('MNIST_data',
+                                                    one_hot=True)\
+                                    .test.next_batch(10000)
 
+                plot_2d_vae(sess, x_sample, y_sample,
+                            vae, FLAGS.batch_size)
             else:
                 plot_Nd_vae(sess, generators, vae, FLAGS.batch_size)
 
