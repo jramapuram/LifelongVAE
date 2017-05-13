@@ -1,21 +1,25 @@
+import os
+import h5py
 import numpy as np
 
 from copy import deepcopy
 from tensorflow.examples.tutorials.mnist import input_data
 from itertools import compress
 from utils import zip_filter_unzip
+from scipy.misc import imrotate as rotate
+
 
 # An object that filters MNIST to a single number
 class MNIST_Number(object):
     def __init__(self, number, mnist, is_one_vs_all=False):
         self.input_size = len(mnist.train.images[0])
-        self.number = number # the number to filter out
+        self.number = number  # the number to filter out
         self.is_one_vs_all = is_one_vs_all
         if not is_one_vs_all:
             self.blacklist = list(np.arange(11))
             self.blacklist.remove(self.number)
         else:
-            self.blacklist = [1] # the 'other' class
+            self.blacklist = [1]  # the 'other' class
 
         self.mnist = MNIST_Number.filter_numbers(mnist, self.blacklist)
 
@@ -25,6 +29,55 @@ class MNIST_Number(object):
         mnist.train._images /= 255.
         mnist.validation._images /= 255.
         mnist.test._images /= 255.
+        return mnist
+
+    @staticmethod
+    def _rotate_batch(batch, angle):
+        return np.vstack([rotate(x_i.reshape(28, 28), 90).reshape([-1, 28*28])
+                          for x_i in batch]) / 255.
+
+    @staticmethod
+    def _check_and_load_angle(angle, number, base_path='MNIST_data'):
+        ''' Returns None if the file doesn't exists'''
+        filename = os.path.join(base_path, "mnist_num%d_angle%d.hdf5"
+                                % (number, angle))
+        if os.path.exists(filename):
+            f = h5py.File(filename, "r")
+            return f['train'][()], f['validation'][()], f['test'][()]
+            # return f['train'], f['validation'], f['test']
+
+        return None
+
+    @staticmethod
+    def _check_and_write_angle(angle, number, mnist, base_path='MNIST_data'):
+        ''' serializes the rotated number to disk as a hdf5 file'''
+        filename = os.path.join(base_path, "mnist_num%d_angle%d.hdf5"
+                                % (number, angle))
+        if not os.path.exists(filename):
+            f = h5py.File(filename, "w")
+            f['train'] = mnist.train._images
+            f['validation'] = mnist.validation._images
+            f['test'] = mnist.test._images
+
+            print 'serialized %s to disk...' % filename
+
+    @staticmethod
+    def rotate_all_sets(mnist, number, angle):
+        hpf5_load = MNIST_Number._check_and_load_angle(angle, number)
+        if hpf5_load is not None:
+            train_imgs = np.asarray(hpf5_load[0], np.float32)
+            validation_imgs = np.asarray(hpf5_load[1], np.float32)
+            test_imgs = np.asarray(hpf5_load[2], np.float32)
+        else:
+            train_imgs = MNIST_Number._rotate_batch(mnist.train._images, angle)
+            validation_imgs = MNIST_Number._rotate_batch(mnist.validation._images, angle)
+            test_imgs = MNIST_Number._rotate_batch(mnist.test._images, angle)
+
+        mnist.train._images = train_imgs
+        mnist.validation._images = validation_imgs
+        mnist.test._images = test_imgs
+
+        MNIST_Number._check_and_write_angle(angle, number, mnist)
         return mnist
 
     @staticmethod

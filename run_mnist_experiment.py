@@ -8,6 +8,7 @@ import tensorflow as tf
 import numpy as np
 
 import tensorflow.contrib.distributions as distributions
+from tensorflow.examples.tutorials.mnist import input_data
 from mnist_number import MNIST_Number, full_mnist
 from lifelong_vae import VAE
 from vanilla_vae import VanillaVAE
@@ -31,14 +32,16 @@ flags.DEFINE_string("use_ln", False, "use layer norm")
 flags.DEFINE_string("use_bn", False, "use batch norm")
 flags.DEFINE_string("reparam_type", "continuous", "reparameterization type for vanilla VAE")
 flags.DEFINE_float("learning_rate", 1e-3, "learning rate")
+flags.DEFINE_float("mutual_info_reg", 0.0, "coefficient of mutual information [0 disables]")
 flags.DEFINE_string("base_dir", ".", "base dir to store experiments")
 flags.DEFINE_bool("rotate_mnist", 0, "if true adds 10x+1 rotated versions of MNIST [for seq only]")
+flags.DEFINE_bool("compress_rotations", 0, "if true doesn't add a new class for rotations")
 FLAGS = flags.FLAGS
 
 # Global variables
 GLOBAL_ITER = 0  # keeps track of the iteration ACROSS models
 TRAIN_ITER  = 0  # the iteration of the current model
-
+TEST_SET    = input_data.read_data_sets('MNIST_data', one_hot=True).test
 
 def _build_latest_base_dir(base_name):
     current_index = _find_latest_experiment_number(base_name) + 1
@@ -79,11 +82,13 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                   else 2*FLAGS.latent_size
     encoder = DenseEncoder(sess, latent_size,
                            is_training,
+                           scope="encoder",
                            use_ln=FLAGS.use_ln,
                            use_bn=FLAGS.use_bn,
                            activate_last_layer=False)
     decoder = DenseEncoder(sess, input_shape,
                            is_training,
+                           scope="decoder",
                            use_ln=FLAGS.use_ln,
                            use_bn=FLAGS.use_bn,
                            activate_last_layer=False)
@@ -108,12 +113,14 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
     vae = VAEObj(sess, input_size=input_shape,
                  batch_size=FLAGS.batch_size,
                  latent_size=FLAGS.latent_size,
+                 discrete_size=1,
                  encoder=encoder, decoder=decoder,
                  is_training=is_training,
                  learning_rate=FLAGS.learning_rate,
                  submodel=latest_model[1],
                  vae_tm1=None, base_dir=base_name,
-                 reparam_type=FLAGS.reparam_type)
+                 reparam_type=FLAGS.reparam_type,
+                 mutual_info_reg=FLAGS.mutual_info_reg)
 
     model_filename = "%s/models/%s" % (base_name, latest_model[0])
     is_forked = False
@@ -126,6 +133,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
 
         # contain all the losses for runs
         mean_loss = []
+        mean_elbo = []
         mean_recon = []
         mean_latent = []
 
@@ -142,7 +150,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
             else:
                 current_model = 0
                 total_iter = 0
-                all_models = [current_model]
+                all_models = [(current_model, source[current_model].number)]
 
                 while True:
                     # fork if we get a new model
@@ -156,10 +164,12 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                     # Distribution shift Swapping logic
                     if prev_model != current_model:
                         # save away the current test set loss
-                        mean_t, mean_recon_t, mean_latent_t, _, _, _ \
+                        mean_t, mean_elbo_t, mean_recon_t, mean_latent_t, \
+                            _, _, _, _\
                             = evaluate_reconstr_loss_mnist(sess, vae,
                                                            batch_size)
                         mean_loss += [mean_t]
+                        mean_elbo += [mean_elbo_t]
                         mean_latent += [mean_latent_t]
                         mean_recon += [mean_recon_t]
 
@@ -169,12 +179,28 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                             print '\ntrained %d models, exiting\n' \
                                 % FLAGS.max_dist_swaps
                             break
-                        else:
-                            # keep track of all models
-                            all_models.append(current_model)
 
-                        vae = vae.fork()
+                        # add a new discrete index if we haven't seen this distr yet
+                        # if we compress, we just check to see if the "true" number is in the set
+                        if FLAGS.compress_rotations:
+                            # current_model_perms = set([current_model] + [i for i in range(len(source))])
+                            all_true_models = [i[1] for i in all_models]
+                            num_new_class = 1 if source[current_model].number not in all_true_models else 0
+                            print 'detected %s, prev = %s, num_new_class = %d' % (str(source[current_model].number),
+                                                                                  str(all_true_models), num_new_class)
+                        else:
+                            # just dont add dupes based on the number
+                            all_models_index = [i[0] for i in all_models]
+                            num_new_class = 1 if current_model not in all_models_index else 0
+
+                        vae = vae.fork(num_new_class)
                         is_forked = True  # holds the first fork has been done [spawn student]
+
+                        # keep track of all models (and the TRUE model)
+                        # this is separated because the true model
+                        # might not be the same (eg: rotations)
+                        all_models.append((current_model,
+                                           source[current_model].number))
 
                     for start, end in zip(range(0, len(inputs) + 1, batch_size),
                                           range(batch_size, len(inputs) + 1, batch_size)):
@@ -196,7 +222,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                        delimiter=",")
             print 'All seen models: ', all_models
 
-        write_all_losses(vae.base_dir, mean_loss, mean_recon, mean_latent)
+        write_all_losses(vae.base_dir, mean_loss, mean_elbo, mean_recon, mean_latent)
 
     return vae
 
@@ -313,47 +339,51 @@ def write_csv(arr, base_dir, filename):
 
 
 def evaluate_reconstr_loss_mnist(sess, vae, batch_size):
-    from tensorflow.examples.tutorials.mnist import input_data
-    test_set = input_data.read_data_sets('MNIST_data', one_hot=True).test
-    num_test = test_set.num_examples
+    global TEST_SET
+    num_test = TEST_SET.num_examples
     num_batches = 0.
     loss_t = []
+    elbo_t = []
     recon_loss_t = []
     latent_loss_t = []
 
     # run over our batch size and accumulate the error
     for begin, end in zip(xrange(0, num_test, batch_size),
                           xrange(batch_size, num_test+1, batch_size)):
-        minibatch = test_set.images[begin:end]
+        minibatch = TEST_SET.images[begin:end]
 
-        _, recon_loss, recon_loss_mean, \
-            latent_kl, latent_kl_mean, \
-            cost, cost_mean = vae.reconstruct(minibatch,
-                                              return_losses=True)
+        _, _, recon_loss_mean, \
+            _, latent_kl_mean, \
+            _, cost_mean, elbo_mean \
+            = vae.reconstruct(minibatch,
+                              return_losses=True)
 
         recon_loss_t.append(recon_loss_mean)
         latent_loss_t.append(latent_kl_mean)
+        elbo_t.append(elbo_mean)
         loss_t.append(cost_mean)
         num_batches += 1
 
     # average over the number of minibatches
     loss_t = np.squeeze(np.asarray(loss_t))
+    elbo_t = np.squeeze(np.asarray(elbo_t))
     recon_loss_t = np.squeeze(np.asarray(recon_loss_t))
     latent_loss_t = np.squeeze(np.asarray(latent_loss_t))
 
     mean_loss = np.sum(loss_t) * (1.0 / num_batches)
+    mean_elbo = np.sum(elbo_t) * (1.0 / num_batches)
     mean_recon_loss = np.sum(recon_loss_t) * (1.0 / num_batches)
     mean_latent_loss = np.sum(latent_loss_t) * (1.0 / num_batches)
 
     submodel = vae.submodel if FLAGS.sequential else 0
-    print 'Mean losses [VAE %d] = ELBO: %f | Reconstruction: %f | LatentKL: %f'\
-        % (submodel, mean_loss, mean_recon_loss, mean_latent_loss)
+    print 'Mean losses [VAE %d] = Loss: %f | ELBO: %f | Reconstruction: %f | LatentKL: %f'\
+        % (submodel, mean_loss, mean_elbo, mean_recon_loss, mean_latent_loss)
 
-    return mean_loss, mean_recon_loss, mean_latent_loss,\
-        loss_t, recon_loss_t, latent_loss_t
+    return mean_loss, mean_elbo, mean_recon_loss, mean_latent_loss,\
+        loss_t, elbo_t, recon_loss_t, latent_loss_t
 
 
-def write_all_losses(base_dir, loss_t, recon_loss_t, latent_loss_t):
+def write_all_losses(base_dir, loss_t, elbo_t, recon_loss_t, latent_loss_t):
     # write_csv(np.array([mean_loss]),
     #           base_dir,
     #           "models/test_loss_mean.csv")
@@ -364,6 +394,7 @@ def write_all_losses(base_dir, loss_t, recon_loss_t, latent_loss_t):
     #           base_dir,
     #           "models/test_latent_loss_mean.csv")
     write_csv(loss_t, base_dir, "models/test_loss.csv")
+    write_csv(loss_t, base_dir, "models/test_elbo.csv")
     write_csv(recon_loss_t, base_dir, "models/test_recon_loss.csv")
     write_csv(latent_loss_t, base_dir, "models/test_latent_loss.csv")
 
@@ -373,7 +404,6 @@ def plot_Nd_vae(sess, source, vae, batch_size):
         x_sample = source[0].test.next_batch(batch_size)[0]
         x_reconstruct = vae.reconstruct(x_sample)
     elif FLAGS.sequential:
-        from tensorflow.examples.tutorials.mnist import input_data
         x_sample = input_data.read_data_sets('MNIST_data', one_hot=True)\
                              .test.next_batch(batch_size)[0]
         x_reconstruct = vae.reconstruct(x_sample)
@@ -403,7 +433,7 @@ def create_indexes(num_train, num_models, current_model):
     if np.random.randint(0, FLAGS.batch_size * 13) == 2 \
        and TRAIN_ITER > FLAGS.min_interval:  # XXX: const 5k
         current_model = np.random.randint(0, num_models)
-        #current_model += 1 if current_model < num_models - 1 else 0
+        #current_model = current_model + 1 if current_model < num_models - 1 else 0
         TRAIN_ITER = 0
 
     GLOBAL_ITER += 1
@@ -454,7 +484,7 @@ def rotate_mnist(generators):
     for n in xrange(len(generators)):
         for t in [30, 45, 70, 90, 130, 165, 200, 250, 295, 335]:
             number = MNIST_Number(n, full_mnist, False)
-            number.mnist = MNIST_Number.rotate_all_sets(number.mnist, t)
+            number.mnist = MNIST_Number.rotate_all_sets(number.mnist, n, t)
             rotated.append(number)
 
     generators = generators + rotated
@@ -463,7 +493,6 @@ def rotate_mnist(generators):
 
 
 def main():
-    from tensorflow.examples.tutorials.mnist import input_data
     if FLAGS.sequential:
         generators = [MNIST_Number(i, full_mnist, False) for i in xrange(10)]
     else:

@@ -26,7 +26,7 @@ class VanillaVAE(object):
     See "Auto-Encoding Variational Bayes" by Kingma and Welling
     for more details on the original work.
 
-    Note: vae_tm1 and submodel are not used. Provided for compatibility
+    Note: vae_tm1, num_discrete and submodel are not used. Provided for compatibility
           with online version
 
     """
@@ -35,7 +35,8 @@ class VanillaVAE(object):
                  reconstr_loss_type="binary_cross_entropy",
                  reparam_type="continuous",
                  vae_tm1=None, submodel=None,  # XXX
-                 learning_rate=1e-3, base_dir="."):
+                 learning_rate=1e-3, base_dir=".",
+                 mutual_info_reg=0.0, discrete_size=None):
         self.activation = activation
         self.learning_rate = learning_rate
         self.is_training = is_training
@@ -137,6 +138,7 @@ class VanillaVAE(object):
         # Summaries and saver
         summaries = [tf.summary.scalar("vae_loss_mean", self.cost_mean),
                      tf.summary.scalar("vae_latent_loss_mean", self.latent_loss_mean),
+                     tf.summary.scalar("vae_grad_norm", self.grad_norm),
                      tf.summary.scalar("vae_selected_class", tf.argmax(tf.reduce_sum(self.z, 0), 0)),
                      tf.summary.histogram("vae_latent_dist", self.latent_kl),
                      tf.summary.scalar("vae_latent_loss_max", tf.reduce_max(self.latent_kl)),
@@ -388,10 +390,10 @@ class VanillaVAE(object):
 
     def _create_optimizer(self, tvars, cost, lr):
         # optimizer = tf.train.rmspropoptimizer(self.learning_rate)
-        # optimizer = tf.train.AdamOptimizer(learning_rate=lr)
+        optimizer = tf.train.AdamOptimizer(learning_rate=lr)
 
         print 'there are %d trainable vars in cost %s\n' % (len(tvars), cost.name)
-        # grads = tf.gradients(cost, tvars)
+        grads = tf.gradients(cost, tvars)
 
         # DEBUG: exploding gradients test with this:
         # for index in range(len(grads)):
@@ -400,8 +402,10 @@ class VanillaVAE(object):
         #         grads[index] = tf.Print(grads[index], [grads[index]], gradstr, summarize=100)
 
         # grads, _ = tf.clip_by_global_norm(grads, 5.0)
-        # return optimizer.apply_gradients(zip(grads, tvars))
-        return tf.train.AdamOptimizer(learning_rate=lr).minimize(cost, var_list=tvars)
+        self.grad_norm = tf.norm(tf.concat([tf.reshape(t, [-1]) for t in grads],
+                                           axis=0))
+        return optimizer.apply_gradients(zip(grads, tvars))
+        # return tf.train.AdamOptimizer(learning_rate=lr).minimize(cost, var_list=tvars)
 
     def partial_fit(self, inputs, iteration_print=10,
                     iteration_save_imgs=2000,
@@ -488,7 +492,7 @@ class VanillaVAE(object):
             ops = [self.x_reconstr_mean_activ,
                    self.reconstr_loss, self.reconstr_loss_mean,
                    self.latent_kl, self.latent_loss_mean,
-                   self.cost, self.cost_mean]
+                   self.cost, self.cost_mean, self.cost_mean]
         else:
             ops = self.x_reconstr_mean_activ
 
