@@ -33,7 +33,7 @@ class MNIST_Number(object):
 
     @staticmethod
     def _rotate_batch(batch, angle):
-        return np.vstack([rotate(x_i.reshape(28, 28), 90).reshape([-1, 28*28])
+        return np.vstack([rotate(x_i.reshape(28, 28), angle).reshape([-1, 28*28])
                           for x_i in batch]) / 255.
 
     @staticmethod

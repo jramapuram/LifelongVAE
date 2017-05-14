@@ -51,6 +51,7 @@ def _get_normalizer(is_training, use_bn, use_ln):
         normalizer_fn = slim.batch_norm
         normalizer_params = batch_norm_params
     else:
+        print 'not using any layer normalization scheme'
         normalizer_fn = None
         normalizer_params = None
 
