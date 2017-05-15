@@ -9,14 +9,20 @@ def gaussian_reparmeterization(logits_z, rnd_sample=None):
     z = mu + sigma * N(0, I)
     '''
     zshp = logits_z.get_shape().as_list()
-    assert zshp[1] % 2 == 0
-    z_log_sigma_sq = logits_z[:, 0:zshp[1]/2]
-    z_mean = logits_z[:, zshp[1]/2:]
+    assert zshp[1] % 3 == 0
+    z_log_sigma_sq = logits_z[:, 0:zshp[1]/3]
+    rank_one = tf.matmul(tf.reshape(logits_z[:, zshp[1]/3:zshp[1]*2/3], [zshp[0], -1, 1]),
+                         tf.reshape(logits_z[:, zshp[1]/3:zshp[1]*2/3], [zshp[0], 1, -1]))
+    print 'rankone = ', rank_one.get_shape().as_list()
+    print 'diaged = ', tf.matrix_diag(z_log_sigma_sq).get_shape().as_list()
+    z_log_sigma_sq = tf.matrix_diag(z_log_sigma_sq) + rank_one
+
+    z_mean = tf.reshape(logits_z[:, zshp[1]*2/3:], [zshp[0], 1, -1])
     print 'zmean shp = ', z_mean.get_shape().as_list()
     print 'z_log_sigma_sq shp = ', z_log_sigma_sq.get_shape().as_list()
 
     if rnd_sample is None:
-        rnd_sample = tf.random_normal(tf.shape(z_mean), 0, 1,
+        rnd_sample = tf.random_normal(tf.shape(z_log_sigma_sq), 0, 1,
                                       dtype=tf.float32)
 
     cov = tf.multiply(tf.sqrt(tf.exp(z_log_sigma_sq)), rnd_sample)

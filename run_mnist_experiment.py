@@ -76,26 +76,24 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
     # note: these can be externally built
     #       as long as it works with forward()
     is_training = tf.placeholder(tf.bool)
-    latent_size = 2*FLAGS.latent_size + 1 if FLAGS.sequential \
-                  else 2*FLAGS.latent_size
+    latent_size = 3*FLAGS.latent_size + 1 if FLAGS.sequential \
+                  else 3*FLAGS.latent_size
     encoder = DenseEncoder(sess, latent_size,
                            is_training,
                            scope="encoder",
                            use_ln=FLAGS.use_ln,
-                           use_bn=FLAGS.use_bn,
-                           activate_last_layer=False)
+                           use_bn=FLAGS.use_bn)
     decoder = DenseEncoder(sess, input_shape,
                            is_training,
                            scope="decoder",
                            use_ln=FLAGS.use_ln,
-                           use_bn=FLAGS.use_bn,
-                           activate_last_layer=False)
-    # encoder = CNNEncoder(sess, latent_size
+                           use_bn=FLAGS.use_bn)
+    # encoder = CNNEncoder(sess, latent_size,
     #                      is_training,
     #                      use_ln=FLAGS.use_ln,
     #                      use_bn=FLAGS.use_bn)
     # decoder_latent_size = FLAGS.latent_size + 1 if FLAGS.sequential \
-    #    else FLAGS.latent_size,
+    #                       else FLAGS.latent_size
     # decoder = CNNDecoder(sess,
     #                      latent_size=decoder_latent_size,
     #                      input_size=input_shape,

@@ -690,7 +690,7 @@ class VAE(object):
             np.savetxt(f, self.sess.run(all_classes), delimiter=",")
 
     def build_new_encoder_decoder_pair(self, num_new_classes=1):
-        updated_latent_size = 2*self.latent_size \
+        updated_latent_size = 3*self.latent_size \
                               + self.num_discrete \
                               + num_new_classes
 
@@ -725,7 +725,7 @@ class VAE(object):
                                  use_bn=self.decoder_model.use_bn,)
             decoder = CNNDecoder(self.sess,
                                  scope="decoder",
-                                 latent_size=self.latent_size + self.num_discrete + 1,
+                                 latent_size=self.latent_size + self.num_discrete + num_new_classes,
                                  input_size=self.input_size,
                                  is_training=self.is_training,
                                  use_ln=self.decoder_model.use_ln,
