@@ -6,7 +6,7 @@ from encoders import _get_normalizer
 class CNNDecoder(object):
     def __init__(self, sess, latent_size, input_size, is_training,
                  activation=tf.nn.elu, use_bn=False, use_ln=False,
-                 activate_last_layer=False, scope="cnn_decoder"):
+                 scope="cnn_decoder"):
         self.sess = sess
         self.layer_type = "cnn"
         self.input_size = input_size
@@ -16,15 +16,13 @@ class CNNDecoder(object):
         self.use_ln = use_ln
         self.scope = scope
         self.is_training = is_training
-        self.activate_last_layer = activate_last_layer
 
     def get_info(self):
         return {'activation': self.activation.__name__,
                 'sizes': str(['128x3x3', '64x5x5',
                               '32x5x5', '1x5x5']),
                 'use_bn': str(self.use_bn),
-                'use_ln': str(self.use_ln),
-                'activ_last_layer': str(self.activate_last_layer)}
+                'use_ln': str(self.use_ln)}
 
     def get_sizing(self):
         return str(['128x3x3', '64x5x5',
@@ -57,13 +55,8 @@ class CNNDecoder(object):
                                            kernel_size=[5, 5],
                                            stride=[2, 2], padding='SAME')
 
-                # XXX : Force activation to sigmoid
-                if self.activate_last_layer:
-                    final_activation = tf.nn.sigmoid
-                else:
-                    final_activation = None
-
                 h3 = slim.conv2d_transpose(h2, num_outputs=1, kernel_size=[5, 5],
                                            stride=[2, 2], padding='SAME',
-                                           activation_fn=final_activation)
+                                           normalizer_fn=None, normalizer_params=None,
+                                           activation_fn=None)
                 return slim.flatten(h3)

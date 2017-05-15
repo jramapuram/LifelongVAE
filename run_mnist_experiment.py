@@ -82,14 +82,12 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                            is_training,
                            scope="encoder",
                            use_ln=FLAGS.use_ln,
-                           use_bn=FLAGS.use_bn,
-                           activate_last_layer=False)
+                           use_bn=FLAGS.use_bn)
     decoder = DenseEncoder(sess, input_shape,
                            is_training,
                            scope="decoder",
                            use_ln=FLAGS.use_ln,
-                           use_bn=FLAGS.use_bn,
-                           activate_last_layer=False)
+                           use_bn=FLAGS.use_bn)
     # encoder = CNNEncoder(sess, latent_size
     #                      is_training,
     #                      use_ln=FLAGS.use_ln,

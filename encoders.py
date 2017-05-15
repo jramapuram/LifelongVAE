@@ -69,7 +69,7 @@ class CNNEncoder(object):
     def __init__(self, sess, latent_size, is_training,
                  activation=tf.nn.elu,
                  use_bn=False, use_ln=False,
-                 activate_last_layer=False, scope="cnn_encoder"):
+                 scope="cnn_encoder"):
         self.sess = sess
         self.layer_type = "cnn"
         self.latent_size = latent_size
@@ -78,7 +78,6 @@ class CNNEncoder(object):
         self.use_ln = use_ln
         self.scope = scope
         self.is_training = is_training
-        self.activate_last_layer = activate_last_layer
 
     def get_info(self):
         return {'activation': self.activation.__name__,
@@ -86,8 +85,7 @@ class CNNEncoder(object):
                 'sizes': str(['32x5x5', '64x5x5', '128x5x5',
                               str(self.latent_size)]),
                 'use_bn': str(self.use_bn),
-                'use_ln': str(self.use_ln),
-                'activ_last_layer': str(self.activate_last_layer)}
+                'use_ln': str(self.use_ln)}
 
     def get_sizing(self):
         return str(['32x5x5', '64x5x5', '128x5x5',
@@ -112,39 +110,21 @@ class CNNEncoder(object):
                 x_flat = tf.reshape(x, [-1, xshp[0], xshp[1], 1])
                 h0 = slim.conv2d(x_flat, 32, [5, 5], stride=2)
                 h1 = slim.conv2d(h0, 64, [5, 5], stride=2)
-                #h2 = slim.conv2d(h1, 128, [5, 5], stride=2)
-                h2_flat = tf.reshape(h1, [xshp[0], -1])
-
-            # batch_size = x.get_shape().as_list()[0]
-            # x = tf.image.resize_images(tf.reshape(x, [-1, 28, 28, 1]), [32, 32])
-            # xshp = x.get_shape().as_list()
-            # print 'xshp resized = ', xshp
-
-            # with slim.arg_scope(resnet_utils.resnet_arg_scope(is_training=self.is_training)):
-            #     #x_flat = tf.reshape(x, [-1, xshp[0], xshp[1], 1])
-            #     h2, _ = resnet_v2.resnet_v2_50(x)#_flat)
-
-            # print 'h2 = ', h2.get_shape().as_list()
-            # #h2_flat = tf.reshape(h2, [1, -1])
-            # h2_flat = slim.flatten(h2)
-            # print 'h2_flat = ', h2_flat.get_shape().as_list()
+                h2 = slim.conv2d(h1, 128, [5, 5], stride=2, padding='VALID')
+                h2_flat = tf.reshape(h2, [xshp[0], -1])
 
             with slim.arg_scope([slim.fully_connected],
                                 weights_initializer=tf.contrib.layers.xavier_initializer(),
                                 biases_initializer=tf.constant_initializer(0)):
-                if self.activate_last_layer:
-                    return slim.fully_connected(h2_flat, self.latent_size,
-                                                activation_fn=self.activation)
-                else:
-                    return slim.fully_connected(h2_flat, self.latent_size,
-                                                activation_fn=None)
+                return slim.fully_connected(h2_flat, self.latent_size,
+                                            activation_fn=None)
 
 
 class DenseEncoder(object):
     def __init__(self, sess, latent_size, is_training,
                  activation=tf.nn.elu,
                  sizes=[512, 512], use_bn=False, use_ln=False,
-                 activate_last_layer=False, scope="dense_encoder"):
+                 scope="dense_encoder"):
         self.sess = sess
         self.layer_type = "dnn"
         self.latent_size = latent_size
@@ -154,15 +134,13 @@ class DenseEncoder(object):
         self.use_ln = use_ln
         self.scope = scope
         self.is_training = is_training
-        self.activate_last_layer = activate_last_layer
 
     def get_info(self):
         return {'activation': self.activation.__name__,
                 'latent_size': self.latent_size,
                 'sizes': str(self.sizes),
                 'use_bn': str(self.use_bn),
-                'use_ln': str(self.use_ln),
-                'activ_last_layer': str(self.activate_last_layer)}
+                'use_ln': str(self.use_ln)}
 
     def get_sizing(self):
         return str(self.sizes)
@@ -182,10 +160,6 @@ class DenseEncoder(object):
                                 biases_initializer=binit,
                                 normalizer_fn=normalizer_fn,
                                 normalizer_params=normalizer_params):
-                if self.activate_last_layer:
-                    return slim.stack(inputs, slim.fully_connected,
-                                      self.sizes, scope="layer")
-                else:
                     layers = slim.stack(inputs, slim.fully_connected,
                                         self.sizes, scope="layer")
 
