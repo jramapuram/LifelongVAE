@@ -10,7 +10,7 @@ def gaussian_reparmeterization(logits_z, rnd_sample=None):
     '''
     zshp = logits_z.get_shape().as_list()
     assert zshp[1] % 2 == 0
-    z_log_sigma_sq = logits_z[:, 0:zshp[1]/2]
+    z_log_sigma_sq = tf.nn.softplus(logits_z[:, 0:zshp[1]/2])
     z_mean = logits_z[:, zshp[1]/2:]
     print 'zmean shp = ', z_mean.get_shape().as_list()
     print 'z_log_sigma_sq shp = ', z_log_sigma_sq.get_shape().as_list()

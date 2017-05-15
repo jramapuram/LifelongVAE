@@ -41,6 +41,7 @@ GLOBAL_ITER = 0  # keeps track of the iteration ACROSS models
 TRAIN_ITER  = 0  # the iteration of the current model
 TEST_SET    = input_data.read_data_sets('MNIST_data', one_hot=True).test
 
+
 def _build_latest_base_dir(base_name):
     current_index = _find_latest_experiment_number(base_name) + 1
     experiment_name = base_name + "_%d" % current_index

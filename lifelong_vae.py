@@ -708,15 +708,13 @@ class VAE(object):
                                    scope="encoder",
                                    sizes=layer_sizes,
                                    use_ln=self.encoder_model.use_ln,
-                                   use_bn=self.decoder_model.use_bn,
-                                   activate_last_layer=False)
+                                   use_bn=self.decoder_model.use_bn)
             decoder = DenseEncoder(self.sess, self.input_size,
                                    self.is_training,
                                    scope="decoder",
                                    sizes=layer_sizes,
                                    use_ln=self.decoder_model.use_ln,
-                                   use_bn=self.decoder_model.use_bn,
-                                   activate_last_layer=False)
+                                   use_bn=self.decoder_model.use_bn)
         else:
             encoder = CNNEncoder(self.sess, updated_latent_size,
                                  self.is_training,
