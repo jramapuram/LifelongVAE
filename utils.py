@@ -164,6 +164,10 @@ def compress(output_file, sources):
     tar.close()
 
 
+def shp(tensor):
+    return tensor.get_shape().as_list()
+
+
 def shuffle_jointly(*args):
     '''
     accepts n args, concatinates them all together

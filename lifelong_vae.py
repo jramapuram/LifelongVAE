@@ -29,11 +29,12 @@ class VAE(object):
     Note: reparam_type is fixed; provided in ctor due to compatibility
           with the vanilla VAE
     """
-    def __init__(self, sess, input_size, batch_size, latent_size,
+    def __init__(self, sess, x, input_size, batch_size, latent_size,
                  encoder, decoder, is_training, discrete_size, activation=tf.nn.elu,
                  reconstr_loss_type="binary_cross_entropy", reparam_type=None,
                  learning_rate=1e-3, submodel=0, total_true_models=0, vae_tm1=None,
-                 base_dir=".", mutual_info_reg=0.0):
+                 base_dir=".", mutual_info_reg=0.0, img_shape=[28, 28, 1]):
+        self.x = x
         self.activation = activation
         self.learning_rate = learning_rate
         self.is_training = is_training
@@ -44,6 +45,7 @@ class VAE(object):
         self.input_size = input_size
         self.latent_size = latent_size
         self.batch_size = batch_size
+        self.img_shape = img_shape
         self.iteration = 0
         self.submodel = submodel
         self.total_true_models = total_true_models
@@ -65,7 +67,7 @@ class VAE(object):
         # self.graph = tf.Graph()
 
         # create these in scope
-        self._create_variables()
+        self._create_variables(x)
 
         # Create autoencoder network
         self._create_network()
@@ -117,16 +119,16 @@ class VAE(object):
         if not os.path.exists(logs_dir):
             os.makedirs(logs_dir)
 
-    def _create_variables(self):
+    def _create_variables(self, x_placeholder):
         with tf.variable_scope(self.get_name()):
             # Create the placeholders if we are at the first model
             # Else simply pull the references
-            if self.submodel == 0:
-                self.x = tf.placeholder(tf.float32, shape=[self.batch_size,
-                                                           self.input_size],
-                                        name="input_placeholder")
-            else:
-                self.x = self.vae_tm1.x
+            # if self.submodel == 0:
+            #     self.x = tf.placeholder(tf.float32, shape=[self.batch_size,
+            #                                                self.input_size],
+            #                             name="input_placeholder")
+            # else:
+            #     self.x = self.vae_tm1.x
 
             # gpu iteration count
             self.iteration_gpu = tf.Variable(0.0, trainable=False)
@@ -164,9 +166,17 @@ class VAE(object):
         #           1) augmented images;
         #           2) original images[current distribution]
         #           3) reconstructed images
-        x_orig, x_aug, x_reconstr = shuffle_jointly(self.x, self.x_augmented, # noqa
-                                                    self.x_reconstr_mean_activ)
-        img_shp = [self.batch_size, 28, 28, 1]
+        dimensions = len(shp(self.x))
+        if dimensions == 2:
+            x_orig, x_aug, x_reconstr = shuffle_jointly(self.x, self.x_augmented, # noqa
+                                                        self.x_reconstr_mean_activ)
+        else:
+            # TODO: modify shuffle jointly for 3d images
+            x_orig, x_aug, x_reconstr = [self.x,
+                                         self.x_augmented,
+                                         self.x_reconstr_mean_activ]
+
+        img_shp = [self.batch_size] + self.img_shape
         image_summaries = [tf.summary.image("x_augmented_t", tf.reshape(x_aug, img_shp), # noqa
                                             max_outputs=self.batch_size),
                            tf.summary.image("x_t", tf.reshape(x_orig, img_shp),
@@ -189,7 +199,6 @@ class VAE(object):
                 self.accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
             num_xhat_tm1 = self.xhat_tm1.get_shape().as_list()
-            img_shp = [-1, 28, 28, 1]  # XXX
             image_summaries += [tf.summary.image("xhat_tm1",
                                                  tf.reshape(self.xhat_tm1, img_shp),
                                                  max_outputs=num_xhat_tm1[0])]
@@ -232,6 +241,8 @@ class VAE(object):
                                                          .replace('}', '') \
                                                          .replace(',', '_') \
                                                          .replace(':', '') \
+                                                         .replace('(', '') \
+                                                         .replace(')', '') \
                                                          .replace('\'', '')
             return 'vae%d_' % self.submodel + full_hash_str
         else:
@@ -501,7 +512,9 @@ class VAE(object):
         else:
             loss = self._l2_loss(truth, pred)
 
-        return tf.reduce_sum(loss, 1)
+        channels = truth.get_shape().as_list()
+        reduction_indices = [1, 2, 3] if len(channels) > 3 else [1]
+        return tf.reduce_sum(loss, reduction_indices)
 
     @staticmethod
     def _cross_entropy(x, x_reconstr):
@@ -723,7 +736,7 @@ class VAE(object):
                                  use_bn=self.decoder_model.use_bn,)
             decoder = CNNDecoder(self.sess,
                                  scope="decoder",
-                                 latent_size=self.latent_size + self.num_discrete + 1,
+                               #  latent_size=self.latent_size + self.num_discrete + 1,
                                  input_size=self.input_size,
                                  is_training=self.is_training,
                                  use_ln=self.decoder_model.use_ln,
@@ -743,7 +756,7 @@ class VAE(object):
         print 'encoder = ', encoder.get_info()
         print 'decoder = ', decoder.get_info()
 
-        vae_tp1 = VAE(self.sess,
+        vae_tp1 = VAE(self.sess, self.x,
                       input_size=self.input_size,
                       batch_size=self.batch_size,
                       latent_size=self.latent_size,
@@ -756,6 +769,7 @@ class VAE(object):
                       submodel=self.submodel+1,
                       total_true_models=self.total_true_models+num_new_class,
                       vae_tm1=self,
+                      img_shape=self.img_shape,
                       base_dir=self.base_dir)
 
         # we want to reinit our weights and biases to their defaults

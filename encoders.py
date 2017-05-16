@@ -67,11 +67,12 @@ def forward(inputs, operator):
 
 class CNNEncoder(object):
     def __init__(self, sess, latent_size, is_training,
-                 activation=tf.nn.elu,
+                 activation=tf.nn.elu, df_dim=64,
                  use_bn=False, use_ln=False,
                  scope="cnn_encoder"):
         self.sess = sess
         self.layer_type = "cnn"
+        self.df_dim = df_dim
         self.latent_size = latent_size
         self.activation = activation
         self.use_bn = use_bn
@@ -82,14 +83,19 @@ class CNNEncoder(object):
     def get_info(self):
         return {'activation': self.activation.__name__,
                 'latent_size': self.latent_size,
-                'sizes': str(['32x5x5', '64x5x5', '128x5x5',
-                              str(self.latent_size)]),
+                'sizes': self.get_sizing(),
                 'use_bn': str(self.use_bn),
                 'use_ln': str(self.use_ln)}
 
     def get_sizing(self):
-        return str(['32x5x5', '64x5x5', '128x5x5',
-                    str(self.latent_size)])
+        return '4_5x5xN_s2_fc%d' % (self.latent_size)
+
+    def get_detailed_sizing(self):
+        return 's2_5x5x%d_' % self.df_dim \
+            + 's2_5x5x%d_' % self.df_dim*2 \
+            + 's2_5x5x%d_' % self.df_dim*4 \
+            + 's2_5x5x%d_' % self.df_dim*8 \
+            + 'fc%d' % self.latent_size
 
     def get_model(self, x):
         # get the normalizer function and parameters
@@ -107,16 +113,22 @@ class CNNEncoder(object):
                                 normalizer_fn=normalizer_fn,
                                 normalizer_params=normalizer_params):
                 xshp = x.get_shape().as_list()
-                x_flat = tf.reshape(x, [-1, xshp[0], xshp[1], 1])
-                h0 = slim.conv2d(x_flat, 32, [5, 5], stride=2)
-                h1 = slim.conv2d(h0, 64, [5, 5], stride=2)
-                h2 = slim.conv2d(h1, 128, [5, 5], stride=2, padding='VALID')
-                h2_flat = tf.reshape(h2, [xshp[0], -1])
+                x_flat = tf.reshape(x, [-1, xshp[0], xshp[1],
+                                        xshp[2] if len(xshp) > 2 else 1])
+                # h0 = slim.conv2d(x_flat, 32, [5, 5], stride=2)
+                # h1 = slim.conv2d(h0, 64, [5, 5], stride=2)
+                # h2 = slim.conv2d(h1, 128, [5, 5], stride=2, padding='VALID')
+                # h2_flat = tf.reshape(h2, [xshp[0], -1])
 
-            with slim.arg_scope([slim.fully_connected],
-                                weights_initializer=tf.contrib.layers.xavier_initializer(),
-                                biases_initializer=tf.constant_initializer(0)):
-                return slim.fully_connected(h2_flat, self.latent_size,
+                h0 = slim.conv2d(x_flat, self.df_dim, [5, 5], stride=2)
+                h1 = slim.conv2d(h0, self.df_dim*2, [5, 5], stride=2)
+                h2 = slim.conv2d(h1, self.df_dim*4, [5, 5], stride=2)
+                h3 = slim.conv2d(h2, self.df_dim*8, [5, 5], stride=2)
+                h3_flat = tf.reshape(h3, [xshp[0], -1])
+
+                return slim.fully_connected(h3_flat,
+                                            self.latent_size,
+                                            normalizer_fn=None,
                                             activation_fn=None)
 
 

@@ -1,5 +1,26 @@
 import tensorflow as tf
+import tensorflow.contrib.distributions as d
+
 from utils import gumbel_softmax
+
+
+# def gaussian_reparmeterization(logits_z, rnd_sample=None):
+#     '''
+#     The vanilla gaussian reparameterization from Kingma et. al
+
+#     z = mu + sigma * N(0, I)
+#     '''
+#     zshp = logits_z.get_shape().as_list()
+#     assert zshp[1] % 2 == 0
+#     z_log_sigma_sq = logits_z[:, 0:zshp[1]/2]
+#     z_mean = logits_z[:, zshp[1]/2:]
+
+#     z = d.MultivariateNormalDiagWithSoftplusScale(z_mean + 1e-9,
+#                                                   z_log_sigma_sq)
+#     prior = d.MultivariateNormalDiagWithSoftplusScale(tf.zeros_like(z_mean) + 1e-9,
+#                                                       tf.ones_like(z_log_sigma_sq))
+
+#     return [z.sample(), d.kl(prior, z, allow_nan_stats=False)]
 
 
 def gaussian_reparmeterization(logits_z, rnd_sample=None):
@@ -10,7 +31,7 @@ def gaussian_reparmeterization(logits_z, rnd_sample=None):
     '''
     zshp = logits_z.get_shape().as_list()
     assert zshp[1] % 2 == 0
-    z_log_sigma_sq = tf.nn.softplus(logits_z[:, 0:zshp[1]/2])
+    z_log_sigma_sq = logits_z[:, 0:zshp[1]/2]
     z_mean = logits_z[:, zshp[1]/2:]
     print 'zmean shp = ', z_mean.get_shape().as_list()
     print 'z_log_sigma_sq shp = ', z_log_sigma_sq.get_shape().as_list()
@@ -19,12 +40,16 @@ def gaussian_reparmeterization(logits_z, rnd_sample=None):
         rnd_sample = tf.random_normal(tf.shape(z_mean), 0, 1,
                                       dtype=tf.float32)
 
-    cov = tf.multiply(tf.sqrt(tf.exp(z_log_sigma_sq)), rnd_sample)
+    # cov = tf.multiply(tf.sqrt(tf.exp(z_log_sigma_sq)), rnd_sample)
+    # softplus = log(exp(features) + 1)
+    cov = tf.multiply(tf.sqrt(tf.nn.softplus(z_log_sigma_sq)), rnd_sample)
     z = tf.add(z_mean, cov, name="z")
 
     reduce_index = [1] if len(zshp) == 2 else [1, 2]
     kl = -0.5 * tf.reduce_sum(1.0 + z_log_sigma_sq - tf.square(z_mean)
-                              - tf.exp(z_log_sigma_sq), reduce_index)
+                              - tf.nn.softplus(z_log_sigma_sq), reduce_index)
+    # kl = -0.5 * tf.reduce_sum(1.0 + z_log_sigma_sq - tf.square(z_mean)
+    #                           - tf.exp(z_log_sigma_sq), reduce_index)
     return [z, kl]
 
 
