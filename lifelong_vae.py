@@ -31,8 +31,9 @@ class VAE(object):
     """
     def __init__(self, sess, x, input_size, batch_size, latent_size,
                  encoder, decoder, is_training, discrete_size, activation=tf.nn.elu,
-                 reconstr_loss_type="binary_cross_entropy", reparam_type=None,
-                 learning_rate=1e-3, submodel=0, total_true_models=0, vae_tm1=None,
+                 reconstr_loss_type="binary_cross_entropy", learning_rate=1e-3,
+                 submodel=0, total_true_models=0, vae_tm1=None,
+                 p_x_given_z_func=distributions.Bernoulli,
                  base_dir=".", mutual_info_reg=0.0, img_shape=[28, 28, 1]):
         self.x = x
         self.activation = activation
@@ -41,6 +42,7 @@ class VAE(object):
         self.encoder_model = encoder
         self.decoder_model = decoder
         self.vae_tm1 = vae_tm1
+        self.p_x_given_z_func = p_x_given_z_func
         self.global_iter_base = GLOBAL_ITER
         self.input_size = input_size
         self.latent_size = latent_size
@@ -169,12 +171,12 @@ class VAE(object):
         dimensions = len(shp(self.x))
         if dimensions == 2:
             x_orig, x_aug, x_reconstr = shuffle_jointly(self.x, self.x_augmented, # noqa
-                                                        self.x_reconstr_mean_activ)
+                                                        self.p_x_given_z.mean())
         else:
             # TODO: modify shuffle jointly for 3d images
             x_orig, x_aug, x_reconstr = [self.x,
                                          self.x_augmented,
-                                         self.x_reconstr_mean_activ]
+                                         self.p_x_given_z.mean()]
 
         img_shp = [self.batch_size] + self.img_shape
         image_summaries = [tf.summary.image("x_augmented_t", tf.reshape(x_aug, img_shp), # noqa
@@ -210,10 +212,10 @@ class VAE(object):
         # Merge all the summaries, but ensure we are post-activation
         # keep the image summaries separate, but also include the regular
         # summaries in them
-        with tf.control_dependencies([self.x_reconstr_mean_activ]):
-            self.summaries = tf.summary.merge(summaries)
-            self.image_summaries = tf.summary.merge(image_summaries
-                                                    + summaries)
+        #with tf.control_dependencies([self.p_x_given_z_logits]):
+        self.summaries = tf.summary.merge(summaries)
+        self.image_summaries = tf.summary.merge(image_summaries
+                                                + summaries)
 
         # Write all summaries to logs, but VARY the model name AND add a TIMESTAMP
         # current_summary_name = self.get_name() + self.get_formatted_datetime()
@@ -388,10 +390,16 @@ class VAE(object):
     def generator(self, Z, reuse=False):
         with tf.variable_scope(self.get_name() + "/generator", reuse=reuse):
             print 'generator scope: ', tf.get_variable_scope().name
-            # Use generator to determine mean of
-            # Bernoulli distribution of reconstructed input
-            # print 'batch norm for decoder: ', use_ln
-            return forward(Z, self.decoder_model)
+            logits = forward(Z, self.decoder_model)
+
+            if self.p_x_given_z_func == distributions.Bernoulli:
+                return self.p_x_given_z_func(logits=logits)
+            elif self.p_x_given_z_func == distributions.Normal:
+                channels = shp(logits)[3]
+                assert channels % 2 == 0, "need to project to 2x the channels for gaussian p(x|z)"
+                scale = 1e-6 + tf.nn.softplus(logits[:, :, :, channels/2:])
+                return self.p_x_given_z_func(loc=tf.nn.sigmoid(logits[:, :, :, 0:channels/2]),
+                                             scale=scale)
 
     def _augment_data(self):
         '''
@@ -429,10 +437,9 @@ class VAE(object):
         print 'z_generated = ', zshp
 
         # Generate reconstructions of historical Z's
-        xr = tf.stop_gradient(tf.nn.sigmoid(vae_tm1.generator(z, reuse=True)))
-        print 'xhat internal shp = ', xr.get_shape().as_list()  # TODO: debug
-
-        return [z, z_cat, xr]
+        # xr = tf.stop_gradient(tf.nn.sigmoid(vae_tm1.generator(z, reuse=True)))
+        p_x_given_z_tm1 = vae_tm1.generator(z, reuse=True)
+        return [z, z_cat, p_x_given_z_tm1.mean()]
 
     def _generate_vae_tm1_data(self):
         if self.vae_tm1 is not None:
@@ -501,10 +508,9 @@ class VAE(object):
         print 'z_discrete = ', self.z_discrete.get_shape().as_list()
 
         # reconstruct x via the generator & run activation
-        self.x_reconstr_mean = self.generator(self.z)
-        self.x_reconstr_mean_activ = tf.nn.sigmoid(self.x_reconstr_mean)
-        # self.x_reconstr = distributions.Bernoulli(logits=self.x_reconstr_logits)
-        # self.x_reconstr_mean_activ = self.x_reconstr.mean()
+        #self.p_x_given_z_logits = self.generator(self.z)
+        self.p_x_given_z = self.generator(self.z)
+        # self.x_reconstr_mean_activ = tf.nn.sigmoid(self.x_reconstr_mean)
 
     def _loss_helper(self, truth, pred):
         if self.reconstr_loss_type == "binary_cross_entropy":
@@ -562,7 +568,7 @@ class VAE(object):
     #     # print 'p_x_given_z.entropy() = ', p_x_given_z.entropy().get_shape().as_list()
     #     return q_z.entropy() - tf.reduce_sum(p_x_given_z.entropy(), 1)
 
-    def vae_loss(self, x, x_reconstr_mean, latent_kl, consistency_kl):
+    def vae_loss(self, x, p_x_given_z, latent_kl, consistency_kl):
         # the loss is composed of two terms:
         # 1.) the reconstruction loss (the negative log probability
         #     of the input under the reconstructed bernoulli distribution
@@ -571,7 +577,11 @@ class VAE(object):
         #     for reconstructing the input when the activation in latent
         #     is given.
         # reconstr_loss = tf.reduce_sum(x_reconstr_mean.log_pmf(x), [1])
-        reconstr_loss = self._loss_helper(x, x_reconstr_mean)
+        # reconstr_loss = self._loss_helper(x, x_reconstr_mean)
+        channels = x.get_shape().as_list()
+        reduction_indices = [1, 2, 3] if len(channels) > 3 else [1]
+        log_likelihood = tf.reduce_sum(self.p_x_given_z.log_prob(x),
+                                       reduction_indices)
 
         mutual_info_regularizer \
             = VAE.mutual_information_bernouilli_cat(self.z_pre_gumbel)
@@ -584,16 +594,16 @@ class VAE(object):
         #     the prior.
         # kl_categorical(p=none, q=none, p_logits=none, q_logits=none, eps=1e-6):
         # cost = reconstr_loss - latent_kl
-        elbo = reconstr_loss + latent_kl
+        elbo = -log_likelihood + latent_kl
         cost = elbo + consistency_kl - self.mutual_info_reg * mutual_info_regularizer
 
         # create the reductions only once
         latent_loss_mean = tf.reduce_mean(latent_kl)
-        reconstr_loss_mean = tf.reduce_mean(reconstr_loss)
+        log_likelihood_mean = tf.reduce_mean(log_likelihood)
         elbo_mean = tf.reduce_mean(elbo)
         cost_mean = tf.reduce_mean(cost)
 
-        return [reconstr_loss, reconstr_loss_mean,
+        return [log_likelihood, log_likelihood_mean,
                 latent_loss_mean, cost, cost_mean,
                 elbo_mean]
 
@@ -616,17 +626,17 @@ class VAE(object):
                 self.latent_loss_mean, \
                 self.cost, self.cost_mean, self.elbo_mean \
                 = self.vae_loss(self.x_augmented,
-                                self.x_reconstr_mean,
+                                self.p_x_given_z,
                                 self.latent_kl,
                                 self.kl_consistency)
 
             # construct our optimizer
-            with tf.control_dependencies([self.x_reconstr_mean_activ]):
-                filtered = [v for v in tf.trainable_variables()
-                            if v.name.startswith(self.get_name())]
-                self.optimizer = self._create_optimizer(filtered,
-                                                        self.cost_mean,
-                                                        self.learning_rate)
+            #with tf.control_dependencies([self.p_x_given_z_logits]):
+            filtered = [v for v in tf.trainable_variables()
+                        if v.name.startswith(self.get_name())]
+            self.optimizer = self._create_optimizer(filtered,
+                                                    self.cost_mean,
+                                                    self.learning_rate)
 
     def _create_optimizer(self, tvars, cost, lr):
         # optimizer = tf.train.rmspropoptimizer(self.learning_rate)
@@ -736,7 +746,7 @@ class VAE(object):
                                  use_bn=self.decoder_model.use_bn,)
             decoder = CNNDecoder(self.sess,
                                  scope="decoder",
-                               #  latent_size=self.latent_size + self.num_discrete + 1,
+                                 double_channels=self.decoder_model.double_channels,
                                  input_size=self.input_size,
                                  is_training=self.is_training,
                                  use_ln=self.decoder_model.use_ln,
@@ -763,6 +773,7 @@ class VAE(object):
                       discrete_size=self.num_discrete + num_new_class,
                       encoder=encoder,
                       decoder=decoder,
+                      p_x_given_z_func=self.p_x_given_z_func,
                       is_training=self.is_training,
                       activation=self.activation,
                       learning_rate=self.learning_rate,
@@ -805,7 +816,7 @@ class VAE(object):
 
         # Note: This maps to mean of distribution, we could alternatively
         # sample from Gaussian distribution
-        return self.sess.run(self.x_reconstr_mean_activ,
+        return self.sess.run(self.p_x_given_z.mean(),
                              feed_dict={self.z: z,
                                         self.tau: self.tau_host,
                                         self.is_training: False})
@@ -813,12 +824,12 @@ class VAE(object):
     def reconstruct(self, X, return_losses=False):
         """ Use VAE to reconstruct given data. """
         if return_losses:
-            ops = [self.x_reconstr_mean_activ,
+            ops = [self.p_x_given_z.mean(),
                    self.reconstr_loss, self.reconstr_loss_mean,
                    self.latent_kl, self.latent_loss_mean,
                    self.cost, self.cost_mean, self.elbo_mean]
         else:
-            ops = self.x_reconstr_mean_activ
+            ops = self.p_x_given_z.mean()
 
         return self.sess.run(ops,
                              feed_dict={self.x: X,

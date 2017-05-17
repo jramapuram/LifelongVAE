@@ -121,7 +121,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                  learning_rate=FLAGS.learning_rate,
                  submodel=latest_model[1],
                  vae_tm1=None, base_dir=base_name,
-                 reparam_type=FLAGS.reparam_type,
+                 p_x_given_z_func=distributions.Bernoulli,
                  mutual_info_reg=FLAGS.mutual_info_reg)
 
     model_filename = "%s/models/%s" % (base_name, latest_model[0])

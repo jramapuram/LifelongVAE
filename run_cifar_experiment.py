@@ -92,6 +92,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
     decoder = CNNDecoder(sess,
                          input_size=input_shape,
                          is_training=is_training,
+                         double_channels=True,
                          use_ln=FLAGS.use_ln,
                          use_bn=FLAGS.use_bn)
     print 'encoder = ', encoder.get_info()
@@ -103,13 +104,13 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                  batch_size=FLAGS.batch_size,
                  latent_size=FLAGS.latent_size,
                  discrete_size=1,
+                 p_x_given_z_func=distributions.Normal,
                  encoder=encoder, decoder=decoder,
                  is_training=is_training,
                  learning_rate=FLAGS.learning_rate,
                  submodel=latest_model[1],
                  img_shape=[32, 32, 3],
                  vae_tm1=None, base_dir=base_name,
-                 reparam_type=FLAGS.reparam_type,
                  mutual_info_reg=FLAGS.mutual_info_reg)
 
     model_filename = "%s/models/%s" % (base_name, latest_model[0])

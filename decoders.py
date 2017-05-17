@@ -6,13 +6,15 @@ from encoders import _get_normalizer
 
 class CNNDecoder(object):
     def __init__(self, sess, input_size, is_training,
-                 gf_dim=64, activation=tf.nn.elu, use_bn=False,
+                 gf_dim=64, double_channels=False,
+                 activation=tf.nn.elu, use_bn=False,
                  use_ln=False, scope="cnn_decoder"):
         self.sess = sess
         self.layer_type = "cnn"
         self.input_size = input_size
         self.gf_dim = gf_dim
         self.activation = activation
+        self.double_channels = double_channels
         self.use_bn = use_bn
         self.use_ln = use_ln
         self.scope = scope
@@ -100,6 +102,9 @@ class CNNDecoder(object):
                                            stride=[2, 2],
                                            padding='SAME')
                 channels = self.input_size[-1] if len(self.input_size) > 2 else 1
+                if self.double_channels:
+                    channels *= 2
+
                 h3 = slim.conv2d_transpose(h2, num_outputs=channels,
                                            kernel_size=[5, 5],
                                            stride=[2, 2],
