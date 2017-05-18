@@ -387,7 +387,8 @@ def evaluate_reconstr_loss_mnist(sess, vae, batch_size):
         loss_t, elbo_t, recon_loss_t, latent_loss_t
 
 
-def write_all_losses(base_dir, loss_t, elbo_t, recon_loss_t, latent_loss_t):
+def write_all_losses(base_dir, loss_t, elbo_t, recon_loss_t,
+                     latent_loss_t, prefix="mnist_"):
     # write_csv(np.array([mean_loss]),
     #           base_dir,
     #           "models/test_loss_mean.csv")
@@ -397,10 +398,10 @@ def write_all_losses(base_dir, loss_t, elbo_t, recon_loss_t, latent_loss_t):
     # write_csv(np.array([mean_latent_loss]),
     #           base_dir,
     #           "models/test_latent_loss_mean.csv")
-    write_csv(loss_t, base_dir, "models/test_loss.csv")
-    write_csv(loss_t, base_dir, "models/test_elbo.csv")
-    write_csv(recon_loss_t, base_dir, "models/test_recon_loss.csv")
-    write_csv(latent_loss_t, base_dir, "models/test_latent_loss.csv")
+    write_csv(loss_t, base_dir, "models/%stest_loss.csv" % prefix)
+    write_csv(elbo_t, base_dir, "models/%stest_elbo.csv" % prefix)
+    write_csv(recon_loss_t, base_dir, "models/%stest_recon_loss.csv" % prefix)
+    write_csv(latent_loss_t, base_dir, "models/%stest_latent_loss.csv" % prefix)
 
 
 def plot_Nd_vae(sess, source, vae, batch_size):
@@ -436,8 +437,8 @@ def create_indexes(num_train, num_models, current_model):
     global GLOBAL_ITER
     if np.random.randint(0, FLAGS.batch_size * 13) == 2 \
        and TRAIN_ITER > FLAGS.min_interval:  # XXX: const 5k
-        current_model = np.random.randint(0, num_models)
-        #current_model = current_model + 1 if current_model < num_models - 1 else 0
+        #current_model = np.random.randint(0, num_models)
+        current_model = current_model + 1 if current_model < num_models - 1 else 0
         TRAIN_ITER = 0
 
     GLOBAL_ITER += 1

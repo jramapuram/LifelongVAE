@@ -165,13 +165,18 @@ class DataSet(object):
             end = self._index_in_epoch
             return self._images[start:end], self._labels[start:end]
 
-
 class CIFAR10:
     def __init__(self, one_hot):
         (x_train, y_train), (x_test, y_test) = K.datasets.cifar10.load_data()
         self.train = DataSet(x_train, y_train, one_hot)
         self.test = DataSet(x_test, y_test, one_hot)
 
+        # XXX: for compatibility
+        self.number = 99999
+
+    def get_batch_iter(self, batch_size):
+        images, labels = self.train.next_batch(batch_size)
+        return np.array(images), np.array(labels)
 
 # Read mnist only once [~ 230Mb]
 cifar10 = CIFAR10(one_hot=False)

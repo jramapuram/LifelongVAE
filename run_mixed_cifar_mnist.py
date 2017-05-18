@@ -8,7 +8,9 @@ import tensorflow as tf
 import numpy as np
 
 import tensorflow.contrib.distributions as distributions
+from tensorflow.examples.tutorials.mnist import input_data
 from cifar_class import CIFAR_Class, CIFAR10, cifar10
+from mnist_number import MNIST_Number, full_mnist
 from lifelong_vae import VAE
 from vanilla_vae import VanillaVAE
 from encoders import DenseEncoder, CNNEncoder
@@ -38,8 +40,11 @@ FLAGS = flags.FLAGS
 # Global variables
 GLOBAL_ITER = 0  # keeps track of the iteration ACROSS models
 TRAIN_ITER  = 0  # the iteration of the current model
-TEST_SET    = cifar10.test
-
+TEST_SET_CIFAR = cifar10.test
+TEST_SET_MNIST = input_data.read_data_sets('MNIST_data', one_hot=True).test
+TEST_SET_MNIST._images = TEST_SET_MNIST._images.reshape([-1, 28, 28])
+TEST_SET_MNIST._images = MNIST_Number.resize_images(TEST_SET_MNIST._images, [32, 32])
+TEST_SET_MNIST._images = MNIST_Number.bw_to_rgb(TEST_SET_MNIST._images)
 
 def _build_latest_base_dir(base_name):
     current_index = _find_latest_experiment_number(base_name) + 1
@@ -92,7 +97,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
     decoder = CNNDecoder(sess,
                          input_size=input_shape,
                          is_training=is_training,
-                         double_channels=True,
+                         double_channels=False,
                          use_ln=FLAGS.use_ln,
                          use_bn=FLAGS.use_bn)
     print 'encoder = ', encoder.get_info()
@@ -104,7 +109,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                  batch_size=FLAGS.batch_size,
                  latent_size=FLAGS.latent_size,
                  discrete_size=1,
-                 p_x_given_z_func=distributions.Logistic,
+                 p_x_given_z_func=distributions.Bernoulli,
                  encoder=encoder, decoder=decoder,
                  is_training=is_training,
                  learning_rate=FLAGS.learning_rate,
@@ -123,21 +128,40 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                   tf.local_variables_initializer()])
 
         # contain all the losses for runs
-        mean_loss = []
-        mean_elbo = []
-        mean_recon = []
-        mean_latent = []
+        mean_loss_mnist = []
+        mean_elbo_mnist = []
+        mean_recon_mnist = []
+        mean_latent_mnist = []
+
+        mean_loss_cifar = []
+        mean_elbo_cifar = []
+        mean_recon_cifar = []
+        mean_latent_cifar = []
 
         try:
             if not FLAGS.sequential:
                 vae.train(source[0], batch_size, display_step=1,
                           training_epochs=epochs)
-                mean_t, mean_recon_t, mean_latent_t, _, _, _ \
-                    = evaluate_reconstr_loss_cifar10(sess, vae,
-                                                     batch_size)
-                mean_loss += [mean_t]
-                mean_latent += [mean_latent_t]
-                mean_recon += [mean_recon_t]
+
+                # eval MNIST
+                mean_t, mean_elbo_t, mean_recon_t, mean_latent_t, \
+                    _, _, _, _\
+                    = evaluate_test_losses(sess, vae,
+                                           batch_size, TEST_SET_MNIST)
+                mean_loss_mnist += [mean_t]
+                mean_latent_mnist += [mean_latent_t]
+                mean_recon_mnist += [mean_recon_t]
+                mean_elbo_mnist += [mean_elbo_t]
+
+                # eval CIFAR
+                mean_t, mean_elbo_t, mean_recon_t, mean_latent_t, \
+                    _, _, _, _\
+                    = evaluate_test_losses(sess, vae,
+                                           batch_size, TEST_SET_CIFAR)
+                mean_loss_cifar += [mean_t]
+                mean_latent_cifar += [mean_latent_t]
+                mean_recon_cifar += [mean_recon_t]
+                mean_elbo_cifar += [mean_elbo_t]
             else:
                 current_model = 0
                 total_iter = 0
@@ -157,12 +181,23 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                         # save away the current test set loss
                         mean_t, mean_elbo_t, mean_recon_t, mean_latent_t, \
                             _, _, _, _\
-                            = evaluate_reconstr_loss_cifar10(sess, vae,
-                                                             batch_size)
-                        mean_loss += [mean_t]
-                        mean_elbo += [mean_elbo_t]
-                        mean_latent += [mean_latent_t]
-                        mean_recon += [mean_recon_t]
+                            = evaluate_test_losses(sess, vae,
+                                                   batch_size,
+                                                   TEST_SET_MNIST)
+                        mean_loss_mnist += [mean_t]
+                        mean_elbo_mnist += [mean_elbo_t]
+                        mean_latent_mnist += [mean_latent_t]
+                        mean_recon_mnist += [mean_recon_t]
+
+                        mean_t, mean_elbo_t, mean_recon_t, mean_latent_t, \
+                            _, _, _, _\
+                            = evaluate_test_losses(sess, vae,
+                                                   batch_size,
+                                                   TEST_SET_CIFAR)
+                        mean_loss_cifar += [mean_t]
+                        mean_elbo_cifar += [mean_elbo_t]
+                        mean_latent_cifar += [mean_latent_t]
+                        mean_recon_cifar += [mean_recon_t]
 
                         # for the purposes of this experiment we end
                         # if we reach max_dist_swaps
@@ -213,9 +248,13 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                        delimiter=",")
             print 'All seen models: ', all_models
 
-        write_all_losses(vae.base_dir, mean_loss,
-                         mean_elbo, mean_recon,
-                         mean_latent)
+        write_all_losses(vae.base_dir, mean_loss_cifar,
+                         mean_elbo_cifar, mean_recon_cifar,
+                         mean_latent_cifar, prefix="cifar_")
+
+        write_all_losses(vae.base_dir, mean_loss_mnist,
+                         mean_elbo_mnist, mean_recon_mnist,
+                         mean_latent_mnist, prefix="mnist_")
 
     return vae
 
@@ -331,9 +370,8 @@ def write_csv(arr, base_dir, filename):
         np.savetxt(f, arr, delimiter=",")
 
 
-def evaluate_reconstr_loss_cifar10(sess, vae, batch_size):
-    global TEST_SET
-    num_test = TEST_SET.num_examples
+def evaluate_test_losses(sess, vae, batch_size, test_set):
+    num_test = test_set.num_examples
     num_batches = 0.
     loss_t = []
     elbo_t = []
@@ -343,7 +381,7 @@ def evaluate_reconstr_loss_cifar10(sess, vae, batch_size):
     # run over our batch size and accumulate the error
     for begin, end in zip(xrange(0, num_test, batch_size),
                           xrange(batch_size, num_test+1, batch_size)):
-        minibatch = TEST_SET.images[begin:end]
+        minibatch = test_set.images[begin:end]
 
         _, _, recon_loss_mean, \
             _, latent_kl_mean, \
@@ -393,12 +431,12 @@ def write_all_losses(base_dir, loss_t, elbo_t, recon_loss_t,
     write_csv(latent_loss_t, base_dir, "models/%stest_latent_loss.csv" % prefix)
 
 
-def plot_Nd_vae(sess, source, vae, batch_size):
+def plot_Nd_vae(sess, source, vae, batch_size, test_set, prefix="mnist_"):
     if not FLAGS.sequential:
         x_sample = source[0].test.next_batch(batch_size)[0]
         x_reconstruct = vae.reconstruct(x_sample)
     elif FLAGS.sequential:
-        x_sample = TEST_SET.next_batch(batch_size)[0]
+        x_sample = test_set.next_batch(batch_size)[0]
         x_reconstruct = vae.reconstruct(x_sample)
         x_reconstruct_tm1 = []
         vae_tm1 = vae.vae_tm1
@@ -409,15 +447,16 @@ def plot_Nd_vae(sess, source, vae, batch_size):
 
     # write base
     _write_images(x_sample, x_reconstruct, vae.get_name(),
-                  filename="%s/imgs/20d_reconstr_%s.png" % (vae.base_dir,
-                                                            vae.get_name()))
+                  filename="%s/imgs/%s_reconstr_%s.png" % (vae.base_dir,
+                                                           prefix,
+                                                           vae.get_name()))
 
     # write all recursive
     if FLAGS.sequential:
         for x_r_tm1, name_tm1 in x_reconstruct_tm1:
             _write_images(x_sample, x_r_tm1, name_tm1,
-                          filename="%s/imgs/20d_reconstr_%s.png"
-                          % (vae.base_dir, name_tm1))
+                          filename="%s/imgs/%s_reconstr_%s.png"
+                          % (vae.base_dir, prefix,  name_tm1))
 
 
 def create_indexes(num_train, num_models, current_model):
@@ -487,15 +526,24 @@ def rotate_cifar10(generators):
 
 def main():
     if FLAGS.sequential:
-        generators = [CIFAR_Class(i, cifar10) for i in xrange(10)]
+        generators = [CIFAR10(one_hot=True)]  # [CIFAR_Class(0, cifar10)]
+        generators += [MNIST_Number(i, full_mnist,
+                                    is_one_vs_all=False,
+                                    is_flat=False,
+                                    resize_dims=[32, 32],
+                                    convert_to_rgb=True)
+                       for i in xrange(0, 10)]
+
     else:
         generators = [CIFAR10(one_hot=True)]
+
+    print 'there are %d generators' % len(generators)
 
     # rotate mnist if specified
     if FLAGS.rotate_cifar10:
         generators = rotate_cifar10(generators)
 
-    input_shape = TEST_SET.images.shape[1:]
+    input_shape = TEST_SET_CIFAR.images.shape[1:]
 
     with tf.device(FLAGS.device):
         gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=FLAGS.device_percentage)
@@ -518,9 +566,17 @@ def main():
                 print '###########################################################'
 
                 # evaluate the reconstruction loss under the test set
-                evaluate_reconstr_loss_cifar10(sess,
-                                               vae,
-                                               FLAGS.batch_size)
+                print 'MNIST: ',
+                evaluate_test_losses(sess,
+                                     vae,
+                                     FLAGS.batch_size,
+                                     TEST_SET_MNIST)
+                print 'CIFAR10: ',
+                evaluate_test_losses(sess,
+                                     vae,
+                                     FLAGS.batch_size,
+                                     TEST_SET_CIFAR)
+
 
             # 2d plot shows a cluster plot vs. a reconstruction plot
             if FLAGS.latent_size == 2:
@@ -533,7 +589,10 @@ def main():
                 plot_2d_vae(sess, x_sample, y_sample,
                             vae, FLAGS.batch_size)
             else:
-                plot_Nd_vae(sess, generators, vae, FLAGS.batch_size)
+                plot_Nd_vae(sess, generators, vae, FLAGS.batch_size,
+                            TEST_SET_CIFAR, prefix="cifar_")
+                plot_Nd_vae(sess, generators, vae, FLAGS.batch_size,
+                            TEST_SET_MNIST, prefix="mnist_")
 
 
 if __name__ == "__main__":

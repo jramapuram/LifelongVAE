@@ -151,6 +151,7 @@ class VAE(object):
                      tf.summary.scalar("vae_negative_elbo", self.elbo_mean),
                      tf.summary.scalar("vae_latent_loss_mean", self.latent_loss_mean),
                      tf.summary.scalar("vae_grad_norm", self.grad_norm),
+                     tf.summary.scalar("bits_per_dim", self.generate_bits_per_dim()),
                      tf.summary.scalar("vae_selected_class", tf.argmax(tf.reduce_sum(self.z_discrete, 0), 0)),
                      tf.summary.scalar("vae_selected_class_xtm1", tf.argmax(tf.reduce_sum(self.z_discrete[self.num_current_data:], 0), 0)),
                      tf.summary.histogram("vae_kl_normal", self.kl_normal),
@@ -222,6 +223,12 @@ class VAE(object):
         self.summary_writer = tf.summary.FileWriter("%s/logs" % self.base_dir,
                                                     self.sess.graph,
                                                     flush_secs=60)
+
+    def generate_bits_per_dim(self):
+        num_pixels = np.prod(self.img_shape[1:])
+        batch_size = self.img_shape[0]
+        return self.elbo_mean / (np.log(2.) * num_pixels *
+                                 batch_size)
 
     '''
     A helper function to format the name as a function of the hyper-parameters
@@ -393,13 +400,18 @@ class VAE(object):
             logits = forward(Z, self.decoder_model)
 
             if self.p_x_given_z_func == distributions.Bernoulli:
+                print 'generator: using bernoulli'
                 return self.p_x_given_z_func(logits=logits)
-            elif self.p_x_given_z_func == distributions.Normal:
+            elif self.p_x_given_z_func == distributions.Normal or self.p_x_given_z_func == distributions.Logistic:
+                print 'generator: using exponential family'
                 channels = shp(logits)[3]
                 assert channels % 2 == 0, "need to project to 2x the channels for gaussian p(x|z)"
-                scale = 1e-6 + tf.nn.softplus(logits[:, :, :, channels/2:])
-                return self.p_x_given_z_func(loc=tf.nn.sigmoid(logits[:, :, :, 0:channels/2]),
+                loc = tf.nn.sigmoid(logits[:, :, :, channels/2:])
+                scale = 1e-6 + tf.nn.softplus(logits[:, :, :, 0:channels/2])
+                return self.p_x_given_z_func(loc=loc,
                                              scale=scale)
+            else:
+                raise Exception("unknown distribution provided for likelihood")
 
     def _augment_data(self):
         '''
@@ -576,8 +588,7 @@ class VAE(object):
         #     this can be interpreted as the number of "nats" required
         #     for reconstructing the input when the activation in latent
         #     is given.
-        # reconstr_loss = tf.reduce_sum(x_reconstr_mean.log_pmf(x), [1])
-        # reconstr_loss = self._loss_helper(x, x_reconstr_mean)
+        # log_likelihood = self._loss_helper(x, p_x_given_z.mean())
         channels = x.get_shape().as_list()
         reduction_indices = [1, 2, 3] if len(channels) > 3 else [1]
         log_likelihood = tf.reduce_sum(self.p_x_given_z.log_prob(x),
