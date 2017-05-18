@@ -8,7 +8,7 @@ import tensorflow as tf
 import numpy as np
 
 import tensorflow.contrib.distributions as distributions
-from svhn_number import svhn, SVHN_Class, SVHN
+from svhn_class import svhn, SVHN_Class, SVHN
 from lifelong_vae import VAE
 from vanilla_vae import VanillaVAE
 from encoders import DenseEncoder, CNNEncoder
