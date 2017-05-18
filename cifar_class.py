@@ -84,7 +84,8 @@ class DataSet(object):
                  images,
                  labels,
                  one_hot=False,
-                 dtype=dtypes.float32):
+                 dtype=dtypes.float32,
+                 normalize=True):
         """Construct a DataSet.
         one_hot arg is used only if fake_data is true.  `dtype` can be either
         `uint8` to leave the input as `[0, 255]`, or `float32` to rescale into
@@ -101,7 +102,8 @@ class DataSet(object):
         if dtype == dtypes.float32:
             # Convert from [0, 255] -> [0.0, 1.0].
             images = images.astype(np.float32)
-            images = np.multiply(images, 1.0 / 255.0)
+            if normalize:
+                images = np.multiply(images, 1.0 / 255.0)
 
         self._images = images
         self._labels = labels

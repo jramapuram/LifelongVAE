@@ -16,6 +16,7 @@ from scipy.io import loadmat
 from sklearn.cross_validation import train_test_split
 from itertools import product
 from six.moves.urllib.request import urlretrieve
+from sklearn.preprocessing import MinMaxScaler
 
 from cifar_class import DataSet
 
@@ -144,7 +145,10 @@ def process_data_file(file):
     labels = data['y'].flatten()
     labels[labels == 10] = 0  # Fix for weird labeling in dataset
     labels_one_hot = convert_labels_to_one_hot(labels)
-    img_array = convert_imgs_to_array(imgs)
+    #img_array = convert_imgs_to_array(imgs)
+    img_array = np.transpose(imgs, [3, 0, 1, 2])
+    imgshp = img_array.shape
+    img_array = MinMaxScaler().fit_transform(img_array.reshape(-1, np.prod(imgshp[1:]))).reshape(imgshp)
     return img_array, labels_one_hot
 
 
@@ -452,10 +456,11 @@ class SVHN(object):
         train_labels = np.argmax(train_labels, axis=1)
         valid_labels = np.argmax(valid_labels, axis=1)
         test_labels = np.argmax(test_labels, axis=1)
+        print 'test max = ', np.max(test_data)
 
-        self.train = DataSet(train_data, train_labels, one_hot)
-        self.validation = DataSet(valid_data, valid_labels, one_hot)
-        self.test = DataSet(test_data, test_labels, one_hot)
+        self.train = DataSet(train_data, train_labels, one_hot, normalize=False)
+        self.validation = DataSet(valid_data, valid_labels, one_hot, normalize=False)
+        self.test = DataSet(test_data, test_labels, one_hot, normalize=False)
 
         # XXX: for compatibility
         self.number = 99998
