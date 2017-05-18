@@ -7,11 +7,14 @@ from tensorflow.examples.tutorials.mnist import input_data
 from itertools import compress
 from utils import zip_filter_unzip
 from scipy.misc import imrotate as rotate
+from scipy.misc import imresize as imresize
 
 
 # An object that filters MNIST to a single number
 class MNIST_Number(object):
-    def __init__(self, number, mnist, is_one_vs_all=False):
+    def __init__(self, number, mnist, is_one_vs_all=False,
+                 is_flat=True, resize_dims=None,
+                 convert_to_rgb=False):
         self.input_size = len(mnist.train.images[0])
         self.number = number  # the number to filter out
         self.is_one_vs_all = is_one_vs_all
@@ -21,15 +24,55 @@ class MNIST_Number(object):
         else:
             self.blacklist = [1]  # the 'other' class
 
+        # filter out all other numbers
         self.mnist = MNIST_Number.filter_numbers(mnist, self.blacklist)
 
-    # The data is already normalized!
+        # return images in [batch, row, col]
+        if not is_flat:
+            self.mnist = MNIST_Number._unflatten_mnist(self.mnist)
+
+        # resizes images if resize_dims tuple is provided
+        if resize_dims is not None:
+            self.mnist = MNIST_Number.resize_mnist(self.mnist, resize_dims)
+
+        # tile images as [img, img, img]
+        if convert_to_rgb:
+            self.mnist = MNIST_Number.bw_to_rgb_mnist(self.mnist)
+
     @staticmethod
-    def normalize_mnist(mnist):
-        mnist.train._images /= 255.
-        mnist.validation._images /= 255.
-        mnist.test._images /= 255.
+    def _unflatten_mnist(mnist):
+        mnist.train._images = mnist.train._images.reshape([-1, 28, 28])
+        mnist.validation._images = mnist.validation._images.reshape([-1, 28, 28])
+        mnist.test._images = mnist.test._images.reshape([-1, 28, 28])
         return mnist
+
+    @staticmethod
+    def resize_mnist(mnist, new_dims):
+        mnist.train._images = MNIST_Number.resize_images(mnist.train._images, new_dims)
+        mnist.validation._images = MNIST_Number.resize_images(mnist.validation._images, new_dims)
+        mnist.test._images = MNIST_Number.resize_images(mnist.test._images, new_dims)
+        return mnist
+
+    @staticmethod
+    def bw_to_rgb_mnist(mnist):
+        mnist.train._images = MNIST_Number.bw_to_rgb(mnist.train._images)
+        mnist.validation._images = MNIST_Number.bw_to_rgb(mnist.validation._images)
+        mnist.test._images = MNIST_Number.bw_to_rgb(mnist.test._images)
+        return mnist
+
+
+    @staticmethod
+    def resize_images(imgs, new_dims, flatten=False):
+        flattened_dims = [-1, np.prod(new_dims)] if flatten else [-1] + new_dims
+        return np.vstack([imresize(img.reshape(28, 28),
+                                   new_dims).reshape(flattened_dims)
+                          for img in imgs]) / 255.
+
+    @staticmethod
+    def bw_to_rgb(imgs):
+        return np.vstack([np.tile(img.reshape(img.shape[0], imgs.shape[1], 1), 3)
+                          .reshape(-1, img.shape[0], img.shape[1], 3)
+                          for img in imgs])
 
     @staticmethod
     def _rotate_batch(batch, angle):

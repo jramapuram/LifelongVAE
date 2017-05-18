@@ -8,7 +8,7 @@ import tensorflow as tf
 import numpy as np
 
 import tensorflow.contrib.distributions as distributions
-from cifar_class import CIFAR_Class, CIFAR10, cifar10
+from svhn_number import svhn, SVHN_Class, SVHN
 from lifelong_vae import VAE
 from vanilla_vae import VanillaVAE
 from encoders import DenseEncoder, CNNEncoder
@@ -31,14 +31,14 @@ flags.DEFINE_string("reparam_type", "continuous", "reparameterization type for v
 flags.DEFINE_float("learning_rate", 1e-3, "learning rate")
 flags.DEFINE_float("mutual_info_reg", 0.0, "coefficient of mutual information [0 disables]")
 flags.DEFINE_string("base_dir", ".", "base dir to store experiments")
-flags.DEFINE_bool("rotate_cifar10", 0, "if true adds 10x+1 rotated versions of CIFAR10 [for seq only]")
+flags.DEFINE_bool("rotate_svhn", 0, "if true adds 10x+1 rotated versions of SVHN [for seq only]")
 flags.DEFINE_bool("compress_rotations", 0, "if true doesn't add a new class for rotations")
 FLAGS = flags.FLAGS
 
 # Global variables
 GLOBAL_ITER = 0  # keeps track of the iteration ACROSS models
 TRAIN_ITER  = 0  # the iteration of the current model
-TEST_SET    = cifar10.test
+TEST_SET    = svhn.test
 
 
 def _build_latest_base_dir(base_name):
@@ -133,7 +133,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                 vae.train(source[0], batch_size, display_step=1,
                           training_epochs=epochs)
                 mean_t, mean_recon_t, mean_latent_t, _, _, _ \
-                    = evaluate_reconstr_loss_cifar10(sess, vae,
+                    = evaluate_reconstr_loss_svhn(sess, vae,
                                                      batch_size)
                 mean_loss += [mean_t]
                 mean_latent += [mean_latent_t]
@@ -157,7 +157,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                         # save away the current test set loss
                         mean_t, mean_elbo_t, mean_recon_t, mean_latent_t, \
                             _, _, _, _\
-                            = evaluate_reconstr_loss_cifar10(sess, vae,
+                            = evaluate_reconstr_loss_svhn(sess, vae,
                                                              batch_size)
                         mean_loss += [mean_t]
                         mean_elbo += [mean_elbo_t]
@@ -215,7 +215,7 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
 
         write_all_losses(vae.base_dir, mean_loss,
                          mean_elbo, mean_recon,
-                         mean_latent)
+                         mean_latent, prefix="")
 
     return vae
 
@@ -331,7 +331,7 @@ def write_csv(arr, base_dir, filename):
         np.savetxt(f, arr, delimiter=",")
 
 
-def evaluate_reconstr_loss_cifar10(sess, vae, batch_size):
+def evaluate_reconstr_loss_svhn(sess, vae, batch_size):
     global TEST_SET
     num_test = TEST_SET.num_examples
     num_batches = 0.
@@ -470,14 +470,14 @@ def evaluate_running_hist(vae):
         current_vae += 1
 
 
-def rotate_cifar10(generators):
+def rotate_svhn(generators):
     ''' rotates mnist to the angles specified below
         adds (10x + 1) the number of distributions'''
     rotated = []
     for n in xrange(len(generators)):
         for t in [30, 45, 70, 90, 130, 165, 200, 250, 295, 335]:
-            number = CIFAR_Class(n, cifar10)
-            number.mnist = CIFAR_Class.rotate_all_sets(number.classes,  n, t)
+            number = SVHN_Class(n, svhn)
+            number.mnist = SVHN_Class.rotate_all_sets(number.classes,  n, t)
             rotated.append(number)
 
     generators = generators + rotated
@@ -487,13 +487,13 @@ def rotate_cifar10(generators):
 
 def main():
     if FLAGS.sequential:
-        generators = [CIFAR_Class(i, cifar10) for i in xrange(10)]
+        generators = [SVHN_Class(i, svhn) for i in xrange(10)]
     else:
-        generators = [CIFAR10(one_hot=True)]
+        generators = [SVHN(one_hot=True)]
 
     # rotate mnist if specified
-    if FLAGS.rotate_cifar10:
-        generators = rotate_cifar10(generators)
+    if FLAGS.rotate_svhn:
+        generators = rotate_svhn(generators)
 
     input_shape = TEST_SET.images.shape[1:]
 
@@ -518,9 +518,9 @@ def main():
                 print '###########################################################'
 
                 # evaluate the reconstruction loss under the test set
-                evaluate_reconstr_loss_cifar10(sess,
-                                               vae,
-                                               FLAGS.batch_size)
+                evaluate_reconstr_loss_svhn(sess,
+                                            vae,
+                                            FLAGS.batch_size)
 
             # 2d plot shows a cluster plot vs. a reconstruction plot
             if FLAGS.latent_size == 2:
@@ -528,7 +528,7 @@ def main():
                     x_sample, y_sample = generators[0].test.next_batch(10000)
                 elif FLAGS.sequential:
                     x_sample, y_sample \
-                        = cifar10.test.next_batch(10000)
+                        = svhn.test.next_batch(10000)
 
                 plot_2d_vae(sess, x_sample, y_sample,
                             vae, FLAGS.batch_size)
