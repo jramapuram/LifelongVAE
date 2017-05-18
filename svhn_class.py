@@ -20,6 +20,9 @@ from six.moves.urllib.request import urlretrieve
 from cifar_class import DataSet
 
 
+# modified https://github.com/bdiesel, see there for original
+# this is just that wrapped with the normal class-separating feature
+
 DATA_PATH = "SVHN_data/"
 CROPPED_DATA_PATH = DATA_PATH+"cropped"
 FULL_DATA_PATH = DATA_PATH+"full"
