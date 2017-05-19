@@ -171,6 +171,11 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                 while True:
                     # fork if we get a new model
                     prev_model = current_model
+
+                    # test our model every 100 iterations
+                    if total_iter % 200 == 0:
+                        vae.test(source, batch_size)
+
                     inputs, outputs, indexes, current_model \
                         = generate_train_data(source,
                                               batch_size,
@@ -212,9 +217,11 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                         if FLAGS.compress_rotations:
                             # current_model_perms = set([current_model] + [i for i in range(len(source))])
                             all_true_models = [i[1] for i in all_models]
-                            num_new_class = 1 if source[current_model].number not in all_true_models else 0
-                            print 'detected %s, prev = %s, num_new_class = %d' % (str(source[current_model].number),
-                                                                                  str(all_true_models), num_new_class)
+                            num_new_class = 1 if source[current_model].number \
+                                            not in all_true_models else 0
+                            print 'detected %s, prev = %s, num_new_class = %d'\
+                                % (str(source[current_model].number),
+                                   str(all_true_models), num_new_class)
                         else:
                             # just dont add dupes based on the number
                             all_models_index = [i[0] for i in all_models]
@@ -232,9 +239,9 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                     for start, end in zip(range(0, len(inputs) + 1, batch_size),
                                           range(batch_size, len(inputs) + 1, batch_size)):
                         x = inputs[start:end]
-                        loss, rloss, lloss = vae.partial_fit(x, is_forked=is_forked)
-                        print 'loss[total_iter=%d][iter=%d][model=%d] = %f, latent loss = %f, reconstr loss = %f' \
-                            % (total_iter, vae.iteration, current_model, loss, lloss,
+                        loss, elbo, rloss, lloss = vae.partial_fit(x, is_forked=is_forked)
+                        print 'loss[total_iter=%d][iter=%d][model=%d] = %f, elbo loss = %f, latent loss = %f, reconstr loss = %f' \
+                            % (total_iter, vae.iteration, current_model, loss, elbo, lloss,
                                rloss if rloss is not None else 0.0)
 
                     total_iter += 1
@@ -612,8 +619,7 @@ def main():
                     # TODO: fix this later [broken for rgb imgs]
                     plot_2d_vae(sess, x_sample, y_sample,
                                 vae, FLAGS.batch_size)
-
-                smooth_interpolate_latent_space(sess, vae)
+                    smooth_interpolate_latent_space(sess, vae)
             else:
                 plot_Nd_vae(sess, generators, vae, FLAGS.batch_size,
                             TEST_SET_SVHN, prefix="svhn_")

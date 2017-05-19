@@ -146,6 +146,12 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                 while True:
                     # fork if we get a new model
                     prev_model = current_model
+
+                    # test our model every 100 iterations
+                    if total_iter % 200 == 0:
+                        vae.test(TEST_SET, batch_size)
+
+                    # data iterator
                     inputs, outputs, indexes, current_model \
                         = generate_train_data(source,
                                               batch_size,
@@ -196,9 +202,9 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                     for start, end in zip(range(0, len(inputs) + 1, batch_size),
                                           range(batch_size, len(inputs) + 1, batch_size)):
                         x = inputs[start:end]
-                        loss, rloss, lloss = vae.partial_fit(x, is_forked=is_forked)
-                        print 'loss[total_iter=%d][iter=%d][model=%d] = %f, latent loss = %f, reconstr loss = %f' \
-                            % (total_iter, vae.iteration, current_model, loss, lloss,
+                        loss, elbo, rloss, lloss = vae.partial_fit(x, is_forked=is_forked)
+                        print 'loss[total_iter=%d][iter=%d][model=%d] = %f, elbo loss = %f, latent loss = %f, reconstr loss = %f' \
+                            % (total_iter, vae.iteration, current_model, loss, elbo, lloss,
                                rloss if rloss is not None else 0.0)
 
                     total_iter += 1
@@ -218,6 +224,31 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                          mean_latent, prefix="")
 
     return vae
+
+
+def smooth_interpolate_latent_space(sess, vae, prefix=""):
+    nx = ny = 20
+    x_values = np.linspace(-3, 3, nx)
+    y_values = np.linspace(-3, 3, ny)
+
+    for current_disc in xrange(vae.num_discrete):
+        canvas = np.empty((32*ny, 32*nx, 3))
+        for i, yi in enumerate(x_values):
+            for j, xi in enumerate(y_values):
+                z_mu = np.array([[xi, yi]]*vae.batch_size)
+                z_disc = one_hot(vae.num_discrete, [current_disc]*vae.batch_size)
+                z = np.hstack([z_mu, z_disc])
+                x_mean = vae.generate(z)
+                canvas[(nx-i-1)*32:(nx-i)*32, j*32:(j+1)*32, :] = x_mean[0].reshape(32, 32, 3)
+
+        plt.figure(figsize=(8, 10))
+        Xi, Yi = np.meshgrid(x_values, y_values)
+        plt.imshow(canvas, origin="upper", cmap="gray")
+        plt.tight_layout()
+        plt.savefig("%s/imgs/%sinterpolation_discrete%d.png" % (vae.base_dir,
+                                                                prefix,
+                                                                current_disc))
+        plt.close()
 
 
 # show clustering in 2d
@@ -532,6 +563,7 @@ def main():
 
                 plot_2d_vae(sess, x_sample, y_sample,
                             vae, FLAGS.batch_size)
+                smooth_interpolate_latent_space(sess, vae)
             else:
                 plot_Nd_vae(sess, generators, vae, FLAGS.batch_size)
 

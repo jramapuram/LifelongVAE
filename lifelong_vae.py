@@ -49,6 +49,7 @@ class VAE(object):
         self.batch_size = batch_size
         self.img_shape = img_shape
         self.iteration = 0
+        self.test_epoch = 0
         self.submodel = submodel
         self.total_true_models = total_true_models
         self.mutual_info_reg = mutual_info_reg
@@ -152,8 +153,8 @@ class VAE(object):
                      tf.summary.scalar("vae_latent_loss_mean", self.latent_loss_mean),
                      tf.summary.scalar("vae_grad_norm", self.grad_norm),
                      tf.summary.scalar("bits_per_dim", self.generate_bits_per_dim()),
-                     tf.summary.scalar("vae_selected_class", tf.argmax(tf.reduce_sum(self.z_discrete, 0), 0)),
-                     tf.summary.scalar("vae_selected_class_xtm1", tf.argmax(tf.reduce_sum(self.z_discrete[self.num_current_data:], 0), 0)),
+                     tf.summary.scalar("vae_selected_class", tf.argmax(tf.reduce_sum(self.z_pre_gumbel, 0), 0)),
+                     tf.summary.scalar("vae_selected_class_xtm1", tf.argmax(tf.reduce_sum(self.z_pre_gumbel[self.num_current_data:], 0), 0)),
                      tf.summary.histogram("vae_kl_normal", self.kl_normal),
                      tf.summary.histogram("vae_kl_discrete", self.kl_discrete),
                      tf.summary.histogram("vae_latent_dist", self.latent_kl),
@@ -195,7 +196,7 @@ class VAE(object):
             with tf.variable_scope(self.get_name()):  # accuracy operator
                 # selected_classes_for_xtm1 = tf.argmax(self.z_discrete[self.num_current_data:], 0)
                 # selected_classes_by_vae_tm1 = tf.argmax(self.q_z_t_given_x_t, 0)
-                selected_classes_for_xtm1 = self.z_discrete[self.num_current_data:]
+                selected_classes_for_xtm1 = self.z_pre_gumbel[self.num_current_data:]  # self.z_discrete[self.num_current_data:]
                 selected_classes_by_vae_tm1 = self.q_z_t_given_x_t
                 correct_prediction = tf.equal(tf.argmax(selected_classes_by_vae_tm1, 1),
                                               tf.argmax(selected_classes_for_xtm1, 1))
@@ -220,9 +221,12 @@ class VAE(object):
 
         # Write all summaries to logs, but VARY the model name AND add a TIMESTAMP
         # current_summary_name = self.get_name() + self.get_formatted_datetime()
-        self.summary_writer = tf.summary.FileWriter("%s/logs" % self.base_dir,
-                                                    self.sess.graph,
-                                                    flush_secs=60)
+        self.train_summary_writer = tf.summary.FileWriter("%s/logs/train" % self.base_dir,
+                                                          self.sess.graph,
+                                                          flush_secs=60)
+        self.test_summary_writer = tf.summary.FileWriter("%s/logs/test" % self.base_dir,
+                                                         self.sess.graph,
+                                                         flush_secs=60)
 
     def generate_bits_per_dim(self):
         num_pixels = np.prod(self.img_shape[1:])
@@ -406,7 +410,7 @@ class VAE(object):
                 print 'generator: using exponential family'
                 channels = shp(logits)[3]
                 assert channels % 2 == 0, "need to project to 2x the channels for gaussian p(x|z)"
-                loc = tf.nn.sigmoid(logits[:, :, :, channels/2:])
+                loc = logits[:, :, :, channels/2:]  # tf.nn.sigmoid(logits[:, :, :, channels/2:])
                 scale = 1e-6 + tf.nn.softplus(logits[:, :, :, 0:channels/2])
                 return self.p_x_given_z_func(loc=loc,
                                              scale=scale)
@@ -434,7 +438,8 @@ class VAE(object):
         def _test():
             return self.x
 
-        return tf.cond(self.is_training, _train, _test)
+        #return tf.cond(self.is_training, _train, _test)
+        return _train()
 
     def generate_at_least(self, vae_tm1, batch_size):
         # Returns :
@@ -624,6 +629,7 @@ class VAE(object):
 
         with tf.variable_scope(self.get_name() + "/loss_optimizer"):
             self.latent_kl = self.kl_normal + self.kl_discrete
+
             # if self.submodel > 0:
             #     set the indexes[batch] of the latent kl to zero for the
             #     indices that we are constraining over as we are computing
@@ -670,54 +676,76 @@ class VAE(object):
 
     def partial_fit(self, inputs, iteration_print=10,
                     iteration_save_imgs=2000,
-                    is_forked=False):
+                    is_forked=False, summary="train"):
         """Train model based on mini-batch of input data.
 
         Return cost of mini-batch.
         """
 
         feed_dict = {self.x: inputs,
-                     self.is_training: True,
+                     self.is_training: True if summary == "train" else False,
                      self.tau: self.tau_host}
+        if summary == "train":
+            writer = self.train_summary_writer
+        else:
+            writer = self.test_summary_writer
 
         try:
-            if self.iteration > 0 and self.iteration % 10 == 0:
+            # update tau for gumbel-softmax
+            if summary == "train" and self.iteration > 0 and self.iteration % 10 == 0:
                 rate = -self.anneal_rate*self.iteration
                 self.tau_host = np.maximum(self.tau0 * np.exp(rate),
                                            self.min_temp)
                 print 'updated tau to ', self.tau_host
 
-            ops_to_run = [self.optimizer, self.iteration_gpu_op,
-                          self.cost_mean, self.reconstr_loss_mean,
+            # full list of session ops
+            ops_to_run = [self.cost_mean, self.elbo_mean,
+                          self.reconstr_loss_mean,
                           self.latent_loss_mean]
+            if summary == "train":
+                ops_to_run = [self.optimizer,
+                              self.iteration_gpu_op] + ops_to_run
 
-            if self.iteration % iteration_save_imgs == 0:
+            if iteration_save_imgs > 0 and self.iteration % iteration_save_imgs == 0:
                 # write images + summaries
-                _, _, cost, rloss, lloss, summary_img \
-                    = self.sess.run(ops_to_run + [self.image_summaries],
-                                    feed_dict=feed_dict)
+                if summary == "train":
+                    _, _, cost, elbo, rloss, lloss, summary_img \
+                        = self.sess.run(ops_to_run + [self.image_summaries],
+                                        feed_dict=feed_dict)
+                else:
+                    cost, elbo, rloss, lloss, summary_img \
+                        = self.sess.run(ops_to_run + [self.image_summaries],
+                                        feed_dict=feed_dict)
 
-                self.summary_writer.add_summary(summary_img, self.iteration)
-                                                #* iteration_print)
+                writer.add_summary(summary_img, self.iteration)
             elif self.iteration % iteration_print == 0:
                 # write regular summaries
-                _, _, cost, rloss, lloss, summary \
-                    = self.sess.run(ops_to_run + [self.summaries],
-                                    feed_dict=feed_dict)
+                if summary == "train":
+                    _, _, cost, elbo, rloss, lloss, summary \
+                        = self.sess.run(ops_to_run + [self.summaries],
+                                        feed_dict=feed_dict)
+                else:
+                    cost, elbo, rloss, lloss, summary \
+                        = self.sess.run(ops_to_run + [self.summaries],
+                                        feed_dict=feed_dict)
 
-                self.summary_writer.add_summary(summary, self.iteration)
-                                                #* iteration_print)
+                writer.add_summary(summary, self.iteration)
             else:
                 # write no summary
-                _, _, cost, rloss, lloss \
-                    = self.sess.run(ops_to_run,
-                                    feed_dict=feed_dict)
+                if summary == "train":
+                    _, _, cost, elbo, rloss, lloss \
+                        = self.sess.run(ops_to_run,
+                                        feed_dict=feed_dict)
+                else:
+                    cost, elbo, rloss, lloss \
+                        = self.sess.run(ops_to_run,
+                                        feed_dict=feed_dict)
 
         except Exception as e:
             print 'caught exception in partial fit: ', e
 
         self.iteration += 1
-        return cost, rloss, lloss
+        return cost, elbo, rloss, lloss
 
     def write_classes_to_file(self, filename, all_classes):
         with open(filename, 'a') as f:
@@ -847,24 +875,65 @@ class VAE(object):
                                         self.tau: self.tau_host,
                                         self.is_training: False})
 
+    def test(self, source, batch_size, iteration_save_imgs=10):
+        n_samples = source.num_examples
+        avg_cost = avg_elbo = avg_recon = avg_latent = 0.
+        total_batch = int(n_samples / batch_size)
+
+        # Loop over all batches
+        for i in range(total_batch):
+            batch_xs, _ = source.next_batch(batch_size)
+
+            # only save imgs if we are on the Nth test iteration
+            if self.test_epoch % iteration_save_imgs == 0:
+                iteration_save_imgs_pf = 1
+            else:
+                iteration_save_imgs_pf = -1
+
+            # Fit training using batch data
+            cost, elbo, recon_cost, latent_cost \
+                = self.partial_fit(batch_xs, summary="test",
+                                   iteration_print=1,  # always print
+                                   iteration_save_imgs=iteration_save_imgs_pf)
+
+            # Compute average loss
+            avg_cost += cost / n_samples * batch_size
+            avg_elbo += elbo / n_samples * batch_size
+            avg_recon += recon_cost / n_samples * batch_size
+            avg_latent += latent_cost / n_samples * batch_size
+
+        # Display logs at the end of testing
+        self.test_epoch += 1
+        print "[Test]", \
+            "avg cost = ", "{:.4f} | ".format(avg_cost), \
+            "avg latent cost = ", "{:.4f} | ".format(avg_latent), \
+            "avg elbo loss = ", "{:.4f} | ".format(avg_elbo), \
+            "avg recon loss = ", "{:.4f}".format(avg_recon)
+
     def train(self, source, batch_size, training_epochs=10, display_step=5):
         n_samples = source.train.num_examples
         for epoch in range(training_epochs):
-            avg_cost = 0.
+            avg_cost = avg_elbo = avg_recon = avg_latent = 0.
             total_batch = int(n_samples / batch_size)
             # Loop over all batches
             for i in range(total_batch):
                 batch_xs, _ = source.train.next_batch(batch_size)
 
                 # Fit training using batch data
-                cost, recon_cost, latent_cost = self.partial_fit(batch_xs)
+                cost, elbo, recon_cost, latent_cost\
+                    = self.partial_fit(batch_xs)
+
                 # Compute average loss
                 avg_cost += cost / n_samples * batch_size
+                avg_elbo += elbo / n_samples * batch_size
+                avg_recon += recon_cost / n_samples * batch_size
+                avg_latent += latent_cost / n_samples * batch_size
 
             # Display logs per epoch step
             if epoch % display_step == 0:
                 print "[Epoch:", '%04d]' % (epoch+1), \
                     "current cost = ", "{:.4f} | ".format(cost), \
                     "avg cost = ", "{:.4f} | ".format(avg_cost), \
-                    "latent cost = ", "{:.4f} | ".format(latent_cost), \
-                    "recon cost = ", "{:.4f}".format(recon_cost)
+                    "avg elbo = ", "{:.4f} | ".format(avg_elbo), \
+                    "avg latent = ", "{:.4f} | ".format(avg_latent), \
+                    "avg recon = ", "{:.4f}".format(avg_recon)
