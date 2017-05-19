@@ -9,7 +9,6 @@ from utils import zip_filter_unzip
 from scipy.misc import imrotate as rotate
 from scipy.misc import imresize as imresize
 
-
 # An object that filters MNIST to a single number
 class MNIST_Number(object):
     def __init__(self, number, mnist, is_one_vs_all=False,
@@ -197,6 +196,49 @@ class MNIST_Number(object):
                 images.append(im); labels.append(lbl)
 
         return np.vstack(images)[0:batch_size], np.hstack(labels)[0:batch_size]
+
+
+class AllMnist():
+    def __init__(self, one_hot=True,
+                 is_flat=True,
+                 resize_dims=None,
+                 convert_to_rgb=False):
+        self.mnist = input_data.read_data_sets('MNIST_data', one_hot=one_hot)
+        self.one_hot = one_hot
+        self.number = 99997 # XXX
+
+        # return images in [batch, row, col]
+        if not is_flat:
+            self.mnist = MNIST_Number._unflatten_mnist(self.mnist)
+
+        # resizes images if resize_dims tuple is provided
+        if resize_dims is not None:
+            self.mnist = MNIST_Number.resize_mnist(self.mnist, resize_dims)
+
+        # tile images as [img, img, img]
+        if convert_to_rgb:
+            self.mnist = MNIST_Number.bw_to_rgb_mnist(self.mnist)
+
+    def get_train_batch_iter(self, batch_size):
+        images, labels = self.mnist.train.next_batch(batch_size)
+        #images, labels = self._augment(images, labels)
+        return np.array(images), np.array(labels)
+
+    def get_validation_batch_iter(self, batch_size):
+        images, labels = self.mnist.validation.next_batch(batch_size)
+        #images, labels = self._augment(images, labels)
+        return np.array(images), np.array(labels)
+
+    def _get_test_batch_iter(self, batch_size):
+        images, labels = self.mnist.test.next_batch(batch_size)
+        images, labels = self._augment(images, labels)
+        return np.array(images), np.array(labels)
+
+    def get_test_batch_iter(self, batch_size):
+        return self._get_test_batch_iter(batch_size)
+
+    def get_batch_iter(self, batch_size):
+        return self.get_train_batch_iter(batch_size)
 
 
 # Read mnist only once [~ 230Mb]

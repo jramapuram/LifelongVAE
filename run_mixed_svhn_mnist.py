@@ -11,7 +11,7 @@ import tensorflow.contrib.distributions as distributions
 from tensorflow.examples.tutorials.mnist import input_data
 
 from svhn_class import svhn, SVHN_Class, SVHN
-from mnist_number import MNIST_Number, full_mnist
+from mnist_number import MNIST_Number, full_mnist, AllMnist
 from lifelong_vae import VAE
 from vanilla_vae import VanillaVAE
 from encoders import DenseEncoder, CNNEncoder
@@ -527,14 +527,11 @@ def rotate_svhn(generators):
 
 def main():
     if FLAGS.sequential:
-        generators = [SVHN(one_hot=True)]  # [SVHN_Class(0, svhn)]
-        generators += [MNIST_Number(i, full_mnist,
-                                    is_one_vs_all=False,
-                                    is_flat=False,
-                                    resize_dims=[32, 32],
-                                    convert_to_rgb=True)
-                       for i in xrange(0, 10)]
-
+        all_mnist = AllMnist(one_hot=True,
+                             is_flat=False,
+                             resize_dims=[32, 32],
+                             convert_to_rgb=True)
+        generators = [SVHN(one_hot=True), all_mnist]  # [SVHN_Class(0, svhn)]
     else:
         generators = [SVHN(one_hot=True)]
 
