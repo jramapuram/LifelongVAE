@@ -365,6 +365,30 @@ def plot_ND_vae_inference(sess, vae, batch_size, num_write=10):
         vae_i = vae_i.vae_tm1
         current_vae += 1
 
+def smooth_interpolate_latent_space(sess, vae, prefix=""):
+    nx = ny = 20
+    x_values = np.linspace(-3, 3, nx)
+    y_values = np.linspace(-3, 3, ny)
+
+    for current_disc in xrange(vae.num_discrete):
+        canvas = np.empty((32*ny, 32*nx, 3))
+        for i, yi in enumerate(x_values):
+            for j, xi in enumerate(y_values):
+                z_mu = np.array([[xi, yi]]*vae.batch_size)
+                z_disc = one_hot(vae.num_discrete, [current_disc]*vae.batch_size)
+                z = np.hstack([z_mu, z_disc])
+                x_mean = vae.generate(z)
+                canvas[(nx-i-1)*32:(nx-i)*32, j*32:(j+1)*32, :] = x_mean[0].reshape(32, 32, 3)
+
+        plt.figure(figsize=(8, 10))
+        Xi, Yi = np.meshgrid(x_values, y_values)
+        plt.imshow(canvas, origin="upper", cmap="gray")
+        plt.tight_layout()
+        plt.savefig("%s/imgs/%sinterpolation_discrete%d.png" % (vae.base_dir,
+                                                                prefix,
+                                                                current_disc))
+        plt.close()
+
 
 def write_csv(arr, base_dir, filename):
     with open("%s/%s" % (base_dir, filename), 'a') as f:
@@ -584,8 +608,12 @@ def main():
                     x_sample, y_sample \
                         = svhn.test.next_batch(10000)
 
-                plot_2d_vae(sess, x_sample, y_sample,
-                            vae, FLAGS.batch_size)
+                if len(x_sample.shape) == 2:
+                    # TODO: fix this later [broken for rgb imgs]
+                    plot_2d_vae(sess, x_sample, y_sample,
+                                vae, FLAGS.batch_size)
+
+                smooth_interpolate_latent_space(sess, vae)
             else:
                 plot_Nd_vae(sess, generators, vae, FLAGS.batch_size,
                             TEST_SET_SVHN, prefix="svhn_")
