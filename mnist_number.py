@@ -206,6 +206,7 @@ class AllMnist():
         self.mnist = input_data.read_data_sets('MNIST_data', one_hot=one_hot)
         self.one_hot = one_hot
         self.number = 99997 # XXX
+        self.num_examples = self.mnist.test._num_examples
 
         # return images in [batch, row, col]
         if not is_flat:

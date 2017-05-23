@@ -174,7 +174,8 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
 
                     # test our model every 100 iterations
                     if total_iter % 200 == 0:
-                        vae.test(source, batch_size)
+                        vae.test(TEST_SET_SVHN, batch_size)
+                        vae.test(TEST_SET_MNIST, batch_size)
 
                     inputs, outputs, indexes, current_model \
                         = generate_train_data(source,
@@ -619,7 +620,8 @@ def main():
                     # TODO: fix this later [broken for rgb imgs]
                     plot_2d_vae(sess, x_sample, y_sample,
                                 vae, FLAGS.batch_size)
-                    smooth_interpolate_latent_space(sess, vae)
+
+                smooth_interpolate_latent_space(sess, vae)
             else:
                 plot_Nd_vae(sess, generators, vae, FLAGS.batch_size,
                             TEST_SET_SVHN, prefix="svhn_")
