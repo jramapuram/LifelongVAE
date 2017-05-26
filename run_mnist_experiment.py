@@ -237,20 +237,23 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
     return vae
 
 
-def smooth_interpolate_latent_space(sess, vae, prefix=""):
+def smooth_interpolate_latent_space(sess, vae, prefix="", xdim=28, ydim=28, num_chans=1):
     nx = ny = 20
     x_values = np.linspace(-3, 3, nx)
     y_values = np.linspace(-3, 3, ny)
 
     for current_disc in xrange(vae.num_discrete):
-        canvas = np.empty((32*ny, 32*nx, 3))
+        canvas = np.empty((ydim*ny, xdim*nx, num_chans)) if num_chans > 1 else np.empty((ydim*ny, xdim*nx))
         for i, yi in enumerate(x_values):
             for j, xi in enumerate(y_values):
                 z_mu = np.array([[xi, yi]]*vae.batch_size)
                 z_disc = one_hot(vae.num_discrete, [current_disc]*vae.batch_size)
                 z = np.hstack([z_mu, z_disc])
                 x_mean = vae.generate(z)
-                canvas[(nx-i-1)*32:(nx-i)*32, j*32:(j+1)*32, :] = x_mean[0].reshape(32, 32, 3)
+                if num_chans > 1:
+                    canvas[(nx-i-1)*xdim:(nx-i)*xdim, j*ydim:(j+1)*ydim, :] = x_mean[0].reshape(ydim, xdim, num_chans)
+                else:
+                    canvas[(nx-i-1)*xdim:(nx-i)*xdim, j*ydim:(j+1)*ydim] = x_mean[0].reshape(ydim, xdim)
 
         plt.figure(figsize=(8, 10))
         Xi, Yi = np.meshgrid(x_values, y_values)
