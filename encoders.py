@@ -1,6 +1,7 @@
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 
+from utils import shp
 # from tensorflow.contrib.slim.nets import resnet_v2, resnet_utils
 
 
@@ -67,7 +68,7 @@ def forward(inputs, operator):
 
 class CNNEncoder(object):
     def __init__(self, sess, latent_size, is_training,
-                 activation=tf.nn.elu, df_dim=64,
+                 activation=tf.nn.elu, df_dim=32,
                  use_bn=False, use_ln=False,
                  scope="cnn_encoder"):
         self.sess = sess
@@ -108,28 +109,39 @@ class CNNEncoder(object):
         with tf.variable_scope(self.scope):
             with slim.arg_scope([slim.conv2d],
                                 activation_fn=self.activation,
-                                weights_initializer=winit,
-                                biases_initializer=tf.constant_initializer(0),
+                                # weights_initializer=winit,
+                                # biases_initializer=tf.constant_initializer(0),
                                 normalizer_fn=normalizer_fn,
                                 normalizer_params=normalizer_params):
                 xshp = x.get_shape().as_list()
-                x_flat = tf.reshape(x, [-1, xshp[0], xshp[1],
-                                        xshp[2] if len(xshp) > 2 else 1])
+                x_flat = x if len(xshp) > 2 else tf.expand_dims(x, -1)
+
+                # x_flat = tf.reshape(x, [-1, xshp[0], xshp[1],
+                #                         xshp[2] if len(xshp) > 2 else 1])
                 # h0 = slim.conv2d(x_flat, 32, [5, 5], stride=2)
                 # h1 = slim.conv2d(h0, 64, [5, 5], stride=2)
                 # h2 = slim.conv2d(h1, 128, [5, 5], stride=2, padding='VALID')
                 # h2_flat = tf.reshape(h2, [xshp[0], -1])
 
-                h0 = slim.conv2d(x_flat, self.df_dim, [5, 5], stride=2)
-                h1 = slim.conv2d(h0, self.df_dim*2, [5, 5], stride=2)
-                h2 = slim.conv2d(h1, self.df_dim*4, [5, 5], stride=2)
-                h3 = slim.conv2d(h2, self.df_dim*8, [5, 5], stride=2)
-                h3_flat = tf.reshape(h3, [xshp[0], -1])
+                h0 = slim.conv2d(x_flat, self.df_dim, [5, 5], stride=1, padding='VALID')
+                h1 = slim.conv2d(h0, self.df_dim*2, [4, 4], stride=2, padding='VALID')
+                h2 = slim.conv2d(h1, self.df_dim*4, [4, 4], stride=1, padding='VALID')
+                h3 = slim.conv2d(h2, self.df_dim*8, [4, 4], stride=2, padding='VALID')
+                h4 = slim.conv2d(h3, self.df_dim*16, [4, 4], stride=1, padding='VALID')
+                h5 = slim.conv2d(h4, self.df_dim*16, [1, 1], stride=1, padding='VALID')
+                h6 = slim.conv2d(h5, self.latent_size, [1, 1], stride=1,
+                                 normalizer_fn=None,
+                                 activation_fn=None, padding='VALID')
 
-                return slim.fully_connected(h3_flat,
-                                            self.latent_size,
-                                            normalizer_fn=None,
-                                            activation_fn=None)
+                #return tf.reshape(h6, [-1, self.latent_size])
+                return tf.reshape(h6, [xshp[0], -1])
+
+                # h3_flat = tf.reshape(h3, [xshp[0], -1])
+
+                # return slim.fully_connected(h3_flat,
+                #                             self.latent_size,
+                #                             normalizer_fn=None,
+                #                             activation_fn=None)
 
 
 class DenseEncoder(object):
