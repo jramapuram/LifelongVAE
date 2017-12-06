@@ -67,7 +67,7 @@ def forward(inputs, operator):
 
 class CNNEncoder(object):
     def __init__(self, sess, latent_size, is_training,
-                 activation=tf.nn.elu, df_dim=64,
+                 activation=tf.nn.elu, df_dim=32,
                  use_bn=False, use_ln=False,
                  scope="cnn_encoder"):
         self.sess = sess
@@ -103,8 +103,8 @@ class CNNEncoder(object):
                                                            self.use_bn,
                                                            self.use_ln)
 
-        winit = tf.contrib.layers.xavier_initializer_conv2d()
-        # winit = tf.truncated_normal_initializer(stddev=0.01)
+        # winit = tf.contrib.layers.xavier_initializer_conv2d()
+        winit = tf.truncated_normal_initializer(stddev=0.02)
         with tf.variable_scope(self.scope):
             with slim.arg_scope([slim.conv2d],
                                 activation_fn=self.activation,
@@ -113,29 +113,28 @@ class CNNEncoder(object):
                                 normalizer_fn=normalizer_fn,
                                 normalizer_params=normalizer_params):
                 xshp = x.get_shape().as_list()
-                x_flat = tf.reshape(x, [-1, xshp[0], xshp[1],
-                                        xshp[2] if len(xshp) > 2 else 1])
-                # h0 = slim.conv2d(x_flat, 32, [5, 5], stride=2)
-                # h1 = slim.conv2d(h0, 64, [5, 5], stride=2)
-                # h2 = slim.conv2d(h1, 128, [5, 5], stride=2, padding='VALID')
-                # h2_flat = tf.reshape(h2, [xshp[0], -1])
+                x_flat = x if len(xshp) == 4 else tf.expand_dims(x, -1)
+                print("xflat = ", x_flat.get_shape().as_list())
 
-                h0 = slim.conv2d(x_flat, self.df_dim, [5, 5], stride=2)
-                h1 = slim.conv2d(h0, self.df_dim*2, [5, 5], stride=2)
-                h2 = slim.conv2d(h1, self.df_dim*4, [5, 5], stride=2)
-                h3 = slim.conv2d(h2, self.df_dim*8, [5, 5], stride=2)
-                h3_flat = tf.reshape(h3, [xshp[0], -1])
+                h0 = slim.conv2d(x_flat, self.df_dim, [5, 5], stride=1, padding='VALID')
+                h1 = slim.conv2d(h0, self.df_dim*2, [4, 4], stride=2, padding='VALID')
+                h2 = slim.conv2d(h1, self.df_dim*4, [4, 4], stride=1, padding='VALID')
+                h3 = slim.conv2d(h2, self.df_dim*8, [4, 4], stride=2, padding='VALID')
+                h4 = slim.conv2d(h3, self.df_dim*16, [4, 4], stride=1, padding='VALID')
+                h5 = slim.conv2d(h4, self.df_dim*16, [1, 1], stride=1, padding='VALID')
 
-                return slim.fully_connected(h3_flat,
-                                            self.latent_size,
-                                            normalizer_fn=None,
-                                            activation_fn=None)
-
+            h6 = slim.conv2d(h5, self.latent_size, [1, 1], stride=1, padding='VALID',
+                             weights_initializer=winit,
+                             biases_initializer=tf.constant_initializer(0),
+                             activation_fn=None, normalizer_fn=None)
+            print('conv encoded final = ', h6.get_shape().as_list())
+            return tf.reshape(h6, [xshp[0], -1])
 
 class DenseEncoder(object):
     def __init__(self, sess, latent_size, is_training,
                  activation=tf.nn.elu,
                  sizes=[512, 512], use_bn=False, use_ln=False,
+                 double_features=False,
                  scope="dense_encoder"):
         self.sess = sess
         self.layer_type = "dnn"
@@ -145,6 +144,7 @@ class DenseEncoder(object):
         self.use_bn = use_bn
         self.use_ln = use_ln
         self.scope = scope
+        self.double_features = 2 if double_features else 1
         self.is_training = is_training
 
     def get_info(self):
@@ -162,9 +162,9 @@ class DenseEncoder(object):
         normalizer_fn, normalizer_params = _get_normalizer(self.is_training,
                                                            self.use_bn,
                                                            self.use_ln)
-
         winit = tf.contrib.layers.xavier_initializer()
         binit = tf.constant_initializer(0)
+
         with tf.variable_scope(self.scope):
             with slim.arg_scope([slim.fully_connected],
                                 activation_fn=self.activation,
@@ -175,8 +175,10 @@ class DenseEncoder(object):
                     layers = slim.stack(inputs, slim.fully_connected,
                                         self.sizes, scope="layer")
 
-            return slim.fully_connected(layers, self.latent_size,
+            output_size = self.latent_size * self.double_features
+            return slim.fully_connected(layers, output_size,
                                         activation_fn=None,
+                                        normalizer_fn=None,
                                         weights_initializer=winit,
                                         biases_initializer=binit,
                                         scope='projection')

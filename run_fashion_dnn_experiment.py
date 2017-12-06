@@ -4,12 +4,12 @@ sys.setrecursionlimit(200)
 import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import tensorflow as tf
 import numpy as np
 
 import tensorflow.contrib.distributions as distributions
-from tensorflow.examples.tutorials.mnist import input_data
-from mnist_number import MNIST_Number, full_mnist
+from fashion_number import Fashion_Class, Fashion, fashion
 from lifelong_vae import VAE
 from vanilla_vae import VanillaVAE
 from encoders import DenseEncoder, CNNEncoder
@@ -32,14 +32,14 @@ flags.DEFINE_string("reparam_type", "continuous", "reparameterization type for v
 flags.DEFINE_float("learning_rate", 1e-3, "learning rate")
 flags.DEFINE_float("mutual_info_reg", 0.0, "coefficient of mutual information [0 disables]")
 flags.DEFINE_string("base_dir", ".", "base dir to store experiments")
-flags.DEFINE_bool("rotate_mnist", 0, "if true adds 10x+1 rotated versions of MNIST [for seq only]")
+flags.DEFINE_bool("rotate_fashion", 0, "if true adds 10x+1 rotated versions of FASHION [for seq only]")
 flags.DEFINE_bool("compress_rotations", 0, "if true doesn't add a new class for rotations")
 FLAGS = flags.FLAGS
 
 # Global variables
 GLOBAL_ITER = 0  # keeps track of the iteration ACROSS models
 TRAIN_ITER  = 0  # the iteration of the current model
-TEST_SET    = input_data.read_data_sets('MNIST_data', one_hot=True).test
+TEST_SET    = fashion.test
 
 
 def _build_latest_base_dir(base_name):
@@ -74,9 +74,9 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
 
     print 'base name: ', base_name, '| latest model = ', latest_model
 
-    # our placeholders are generated externall
+    # our placeholders are generated externally
     is_training = tf.placeholder(tf.bool)
-    x = tf.placeholder(tf.float32, shape=[FLAGS.batch_size] + [input_shape],
+    x = tf.placeholder(tf.float32, shape=[FLAGS.batch_size] + list(input_shape),
                        name="input_placeholder")
 
     # build encoder and decoder models
@@ -84,44 +84,49 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
     #       as long as it works with forward()
     latent_size = 2*FLAGS.latent_size + 1 if FLAGS.sequential \
                   else 2*FLAGS.latent_size
-    # encoder = DenseEncoder(sess, latent_size,
-    #                        is_training,
-    #                        scope="encoder",
-    #                        use_ln=FLAGS.use_ln,
-    #                        use_bn=FLAGS.use_bn)
-    # decoder = DenseEncoder(sess, input_shape,
-    #                        is_training,
-    #                        scope="decoder",
-    #                        use_ln=FLAGS.use_ln,
-    #                        use_bn=FLAGS.use_bn)
-    encoder = CNNEncoder(sess, latent_size,
-                         is_training,
-                         use_ln=FLAGS.use_ln,
-                         use_bn=FLAGS.use_bn)
-    # decoder_latent_size = FLAGS.latent_size + 1 if FLAGS.sequential \
-    #                       else FLAGS.latent_size
-    decoder = CNNDecoder(sess,
-                         input_size=input_shape,
-                         is_training=is_training,
-                         double_channels=False,#True,
-                         use_ln=FLAGS.use_ln,
-                         use_bn=FLAGS.use_bn)
+    encoder = DenseEncoder(sess, latent_size,
+                           is_training,
+                           scope="encoder",
+                           use_ln=FLAGS.use_ln,
+                           use_bn=FLAGS.use_bn)
+    decoder = DenseEncoder(sess, int(np.prod(input_shape)),
+                           is_training,
+                           scope="decoder",
+                           #double_features=True,
+                           use_ln=FLAGS.use_ln,
+                           use_bn=FLAGS.use_bn)
 
+    # encoder = CNNEncoder(sess, latent_size,
+    #                      is_training,
+    #                      use_ln=FLAGS.use_ln,
+    #                      use_bn=FLAGS.use_bn)
+    # # decoder_latent_size = FLAGS.latent_size + 1 if FLAGS.sequential \
+    # #                       else FLAGS.latent_size
+    # decoder = CNNDecoder(sess,
+    #                      input_size=input_shape,
+    #                      is_training=is_training,
+    #                      double_channels=False,#True,
+    #                      use_ln=FLAGS.use_ln,
+    #                      use_bn=FLAGS.use_bn)
     print 'encoder = ', encoder.get_info()
     print 'decoder = ', decoder.get_info()
 
     # build the vae object
     VAEObj = VAE if FLAGS.sequential else VanillaVAE
-    vae = VAEObj(sess, x, input_size=input_shape,
+    vae = VAEObj(sess, x, input_size=int(np.prod(input_shape)),#input_shape,
                  batch_size=FLAGS.batch_size,
                  latent_size=FLAGS.latent_size,
                  discrete_size=1,
+                 # p_x_given_z_func=distributions.Normal,
+                 # p_x_given_z_func=distributions.Logistic,
+                 p_x_given_z_func=distributions.Bernoulli,
                  encoder=encoder, decoder=decoder,
                  is_training=is_training,
                  learning_rate=FLAGS.learning_rate,
                  submodel=latest_model[1],
+                 #img_shape=[32, 32, 3],
+                 img_shape=[28, 28, 1],
                  vae_tm1=None, base_dir=base_name,
-                 p_x_given_z_func=distributions.Bernoulli,
                  mutual_info_reg=FLAGS.mutual_info_reg)
 
     model_filename = "%s/models/%s" % (base_name, latest_model[0])
@@ -144,8 +149,8 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                 vae.train(source[0], batch_size, display_step=1,
                           training_epochs=epochs)
                 mean_t, mean_recon_t, mean_latent_t, _, _, _ \
-                    = evaluate_reconstr_loss_mnist(sess, vae,
-                                                   batch_size)
+                    = evaluate_reconstr_loss_fashion(sess, vae,
+                                                     batch_size)
                 mean_loss += [mean_t]
                 mean_latent += [mean_latent_t]
                 mean_recon += [mean_recon_t]
@@ -174,8 +179,8 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                         # save away the current test set loss
                         mean_t, mean_elbo_t, mean_recon_t, mean_latent_t, \
                             _, _, _, _\
-                            = evaluate_reconstr_loss_mnist(sess, vae,
-                                                           batch_size)
+                            = evaluate_reconstr_loss_fashion(sess, vae,
+                                                             batch_size)
                         mean_loss += [mean_t]
                         mean_elbo += [mean_elbo_t]
                         mean_latent += [mean_latent_t]
@@ -217,7 +222,6 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
                         print 'loss[total_iter=%d][iter=%d][model=%d] = %f, elbo loss = %f, latent loss = %f, reconstr loss = %f' \
                             % (total_iter, vae.iteration, current_model, loss, elbo, lloss,
                                rloss if rloss is not None else 0.0)
-
                     total_iter += 1
 
         except KeyboardInterrupt:
@@ -237,23 +241,20 @@ def build_Nd_vae(sess, source, input_shape, latent_size,
     return vae
 
 
-def smooth_interpolate_latent_space(sess, vae, prefix="", xdim=28, ydim=28, num_chans=1):
+def smooth_interpolate_latent_space(sess, vae, prefix=""):
     nx = ny = 20
     x_values = np.linspace(-3, 3, nx)
     y_values = np.linspace(-3, 3, ny)
 
     for current_disc in xrange(vae.num_discrete):
-        canvas = np.empty((ydim*ny, xdim*nx, num_chans)) if num_chans > 1 else np.empty((ydim*ny, xdim*nx))
+        canvas = np.empty((32*ny, 32*nx, 3))
         for i, yi in enumerate(x_values):
             for j, xi in enumerate(y_values):
                 z_mu = np.array([[xi, yi]]*vae.batch_size)
                 z_disc = one_hot(vae.num_discrete, [current_disc]*vae.batch_size)
                 z = np.hstack([z_mu, z_disc])
                 x_mean = vae.generate(z)
-                if num_chans > 1:
-                    canvas[(nx-i-1)*xdim:(nx-i)*xdim, j*ydim:(j+1)*ydim, :] = x_mean[0].reshape(ydim, xdim, num_chans)
-                else:
-                    canvas[(nx-i-1)*xdim:(nx-i)*xdim, j*ydim:(j+1)*ydim] = x_mean[0].reshape(ydim, xdim)
+                canvas[(nx-i-1)*32:(nx-i)*32, j*32:(j+1)*32, :] = x_mean[0].reshape(32, 32, 3)
 
         plt.figure(figsize=(8, 10))
         Xi, Yi = np.meshgrid(x_values, y_values)
@@ -304,16 +305,18 @@ def _write_images(x_sample, x_reconstruct, vae_name, filename,
     for i in range(num_print):
         if x_sample is not None:
             plt.subplot(num_print, 2, 2*i + 1)
-            plt.imshow(x_sample[i].reshape(28, 28), vmin=0, vmax=1)
+            #plt.imshow(x_sample[i].reshape(32, 32, 3))#, vmin=0, vmax=1)
+            plt.imshow(x_sample[i].reshape(28, 28), cmap='Greys')#, vmin=0, vmax=1)
             plt.title("Test input")
             plt.colorbar()
 
         plt.subplot(num_print, 2, 2*i + 2)
-        plt.imshow(x_reconstruct[i].reshape(28, 28), vmin=0, vmax=1)
+        # plt.imshow(x_reconstruct[i].reshape(32, 32, 3))#, vmin=0, vmax=1)
+        plt.imshow(x_reconstruct[i].reshape(28, 28), cmap='Greys')#, vmin=0, vmax=1)
         plt.title("Reconstruction")
         plt.colorbar()
 
-    plt.savefig(filename, bbox_inches='tight')
+    plt.savefig(filename, bbox_inches='tight', cmap=cm.Greys_r)
     plt.close()
 
 
@@ -335,7 +338,8 @@ def plot_ND_vae_consistency(sess, vae, batch_size, num_write=3):
             current_gen_str = 'discrete_index' + str(np.argmax(row))
             plt.figure()
             plt.title(current_gen_str)
-            plt.imshow(generated[i].reshape(28, 28), vmin=0, vmax=1)
+            #plt.imshow(generated[i].reshape(32, 32, 3))#, vmin=0, vmax=1)
+            plt.imshow(generated[i].reshape(28, 28))#, vmin=0, vmax=1)
             plt.colorbar()
             plt.savefig("%s/imgs/vae_%d_consistency_%s_num%d.png"
                         % (vae.base_dir,
@@ -359,7 +363,8 @@ def plot_ND_vae_inference(sess, vae, batch_size, num_write=10):
             current_pred_str = '_atindex' + str(np.argwhere(z)[0][0])
             plt.figure()
             plt.title(current_pred_str)
-            plt.imshow(x.reshape(28, 28), vmin=0, vmax=1)
+            #plt.imshow(x.reshape(32, 32, 3))#, vmin=0, vmax=1)
+            plt.imshow(x.reshape(28, 28))#, vmin=0, vmax=1)
             plt.colorbar()
             plt.savefig("%s/imgs/vae_%d_inference_%s.png" % (vae_i.base_dir,
                                                              current_vae,
@@ -376,7 +381,7 @@ def write_csv(arr, base_dir, filename):
         np.savetxt(f, arr, delimiter=",")
 
 
-def evaluate_reconstr_loss_mnist(sess, vae, batch_size):
+def evaluate_reconstr_loss_fashion(sess, vae, batch_size):
     global TEST_SET
     num_test = TEST_SET.num_examples
     num_batches = 0.
@@ -443,8 +448,7 @@ def plot_Nd_vae(sess, source, vae, batch_size):
         x_sample = source[0].test.next_batch(batch_size)[0]
         x_reconstruct = vae.reconstruct(x_sample)
     elif FLAGS.sequential:
-        x_sample = input_data.read_data_sets('MNIST_data', one_hot=True)\
-                             .test.next_batch(batch_size)[0]
+        x_sample = TEST_SET.next_batch(batch_size)[0]
         x_reconstruct = vae.reconstruct(x_sample)
         x_reconstruct_tm1 = []
         vae_tm1 = vae.vae_tm1
@@ -516,14 +520,14 @@ def evaluate_running_hist(vae):
         current_vae += 1
 
 
-def rotate_mnist(generators):
+def rotate_fashion(generators):
     ''' rotates mnist to the angles specified below
         adds (10x + 1) the number of distributions'''
     rotated = []
     for n in xrange(len(generators)):
         for t in [30, 45, 70, 90, 130, 165, 200, 250, 295, 335]:
-            number = MNIST_Number(n, full_mnist, False)
-            number.mnist = MNIST_Number.rotate_all_sets(number.mnist, n, t)
+            number = Fashion_Class(n, fashion)
+            number.mnist = Fashion_Class.rotate_all_sets(number.classes,  n, t)
             rotated.append(number)
 
     generators = generators + rotated
@@ -533,17 +537,17 @@ def rotate_mnist(generators):
 
 def main():
     if FLAGS.sequential:
-        generators = [MNIST_Number(i, full_mnist, is_one_vs_all=False,
-                                   resize_dims=[32, 32], convert_to_rgb=True)
-                      for i in xrange(10)]
+        generators = [Fashion_Class(i, fashion) for i in xrange(10)]
     else:
-        generators = [input_data.read_data_sets('MNIST_data', one_hot=True)]
+        generators = [Fashion(one_hot=True)]
+
+    print("there are %d generators" % len(generators))
 
     # rotate mnist if specified
-    if FLAGS.rotate_mnist:
-        generators = rotate_mnist(generators)
+    if FLAGS.rotate_fashion:
+        generators = rotate_fashion(generators)
 
-    input_shape = full_mnist.train.images.shape[1]
+    input_shape = TEST_SET.images.shape[1:]
 
     with tf.device(FLAGS.device):
         gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=FLAGS.device_percentage)
@@ -566,9 +570,9 @@ def main():
                 print '###########################################################'
 
                 # evaluate the reconstruction loss under the test set
-                evaluate_reconstr_loss_mnist(sess,
-                                             vae,
-                                             FLAGS.batch_size)
+                evaluate_reconstr_loss_fashion(sess,
+                                               vae,
+                                               FLAGS.batch_size)
 
             # 2d plot shows a cluster plot vs. a reconstruction plot
             if FLAGS.latent_size == 2:
@@ -576,14 +580,11 @@ def main():
                     x_sample, y_sample = generators[0].test.next_batch(10000)
                 elif FLAGS.sequential:
                     x_sample, y_sample \
-                        = input_data.read_data_sets('MNIST_data',
-                                                    one_hot=True)\
-                                    .test.next_batch(10000)
+                        = fashion.test.next_batch(10000)
 
                 plot_2d_vae(sess, x_sample, y_sample,
                             vae, FLAGS.batch_size)
                 smooth_interpolate_latent_space(sess, vae)
-
             else:
                 plot_Nd_vae(sess, generators, vae, FLAGS.batch_size)
 

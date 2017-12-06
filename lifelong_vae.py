@@ -31,7 +31,7 @@ class VAE(object):
     """
     def __init__(self, sess, x, input_size, batch_size, latent_size,
                  encoder, decoder, is_training, discrete_size, activation=tf.nn.elu,
-                 reconstr_loss_type="binary_cross_entropy", learning_rate=1e-3,
+                 reconstr_loss_type="binary_cross_entropy", learning_rate=1e-4,
                  submodel=0, total_true_models=0, vae_tm1=None,
                  p_x_given_z_func=distributions.Bernoulli,
                  base_dir=".", mutual_info_reg=0.0, img_shape=[28, 28, 1]):
@@ -299,7 +299,7 @@ class VAE(object):
         else:
             raise Exception("please provide either logits or dists")
 
-        return distributions.kl(P, Q)
+        return distributions.kl_divergence(P, Q)
 
     @staticmethod
     def zero_pad_smaller_cat(cat1, cat2):
@@ -354,8 +354,11 @@ class VAE(object):
                                            self.q_z_t_given_x_t)
 
             # Now we ONLY want eval the KL on the discrete z
+            # below is the reverse KL:
             kl = self.kl_categorical(q=self.q_z_t_given_x_t,
                                      p=self.q_z_s_given_x_t)
+
+            # forward KL :
             # kl = self.kl_categorical(q=self.q_z_s_given_x_t,
             #                          p=self.q_z_t_given_x_t)
             print 'kl_consistency [prepad] : ', kl.get_shape().as_list()
@@ -369,6 +372,7 @@ class VAE(object):
     def reparameterize(encoded, num_discrete, tau, hard=False,
                        rnd_sample=None, eps=1e-20):
         eshp = encoded.get_shape().as_list()
+        print("encoded = ", eshp)
         num_normal = eshp[1] - num_discrete
         print 'num_normal = ', num_normal
         logits_normal = encoded[:, 0:num_normal]
@@ -406,12 +410,22 @@ class VAE(object):
             if self.p_x_given_z_func == distributions.Bernoulli:
                 print 'generator: using bernoulli'
                 return self.p_x_given_z_func(logits=logits)
-            elif self.p_x_given_z_func == distributions.Normal or self.p_x_given_z_func == distributions.Logistic:
-                print 'generator: using exponential family'
+            elif (self.p_x_given_z_func == distributions.Normal or self.p_x_given_z_func == distributions.Logistic) \
+                 and self.encoder_model.layer_type == 'cnn':
+                print 'generator: using exponential family [cnn]'
                 channels = shp(logits)[3]
                 assert channels % 2 == 0, "need to project to 2x the channels for gaussian p(x|z)"
                 loc = logits[:, :, :, channels/2:]  # tf.nn.sigmoid(logits[:, :, :, channels/2:])
                 scale = 1e-6 + tf.nn.softplus(logits[:, :, :, 0:channels/2])
+                return self.p_x_given_z_func(loc=loc,
+                                             scale=scale)
+            elif (self.p_x_given_z_func == distributions.Normal or self.p_x_given_z_func == distributions.Logistic) \
+                 and self.encoder_model.layer_type == 'dnn':
+                print 'generator: using exponential family [dnn]'
+                features = shp(logits)[-1]
+                assert features % 2 == 0, "need to project to 2x the channels for gaussian p(x|z)"
+                loc = logits[:, features/2:]  # tf.nn.sigmoid(logits[:, :, :, channels/2:])
+                scale = 1e-6 + tf.nn.softplus(logits[:, 0:features/2])
                 return self.p_x_given_z_func(loc=loc,
                                              scale=scale)
             else:
@@ -510,7 +524,6 @@ class VAE(object):
         self.x_augmented = self._augment_data()
         assert self.x_augmented.get_shape().as_list() \
             == self.x.get_shape().as_list()
-        print 'xaug = ', self.x_augmented.get_shape().as_list()
         # TODO: self._shuffle_all_data_together() possible?
 
         # run the encoder operation
@@ -523,10 +536,12 @@ class VAE(object):
                                             rnd_sample=self.rnd_sample)
         print 'z_encoded = ', self.z.get_shape().as_list()
         print 'z_discrete = ', self.z_discrete.get_shape().as_list()
+        print 'z_normal = ', self.z_normal.get_shape().as_list()
 
         # reconstruct x via the generator & run activation
         #self.p_x_given_z_logits = self.generator(self.z)
         self.p_x_given_z = self.generator(self.z)
+        print 'pxgivenz = ', shp(self.p_x_given_z.mean())
         # self.x_reconstr_mean_activ = tf.nn.sigmoid(self.x_reconstr_mean)
 
     def _loss_helper(self, truth, pred):
@@ -770,11 +785,13 @@ class VAE(object):
                                    scope="encoder",
                                    sizes=layer_sizes,
                                    use_ln=self.encoder_model.use_ln,
-                                   use_bn=self.decoder_model.use_bn)
+                                   use_bn=self.encoder_model.use_bn)
+            is_dec_doubled = self.decoder_model.double_features > 1
             decoder = DenseEncoder(self.sess, self.input_size,
                                    self.is_training,
                                    scope="decoder",
                                    sizes=layer_sizes,
+                                   double_features=is_dec_doubled,
                                    use_ln=self.decoder_model.use_ln,
                                    use_bn=self.decoder_model.use_bn)
         else:
@@ -782,7 +799,7 @@ class VAE(object):
                                  self.is_training,
                                  scope="encoder",
                                  use_ln=self.encoder_model.use_ln,
-                                 use_bn=self.decoder_model.use_bn,)
+                                 use_bn=self.encoder_model.use_bn,)
             decoder = CNNDecoder(self.sess,
                                  scope="decoder",
                                  double_channels=self.decoder_model.double_channels,

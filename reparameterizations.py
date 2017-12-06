@@ -27,7 +27,7 @@ def gaussian_reparmeterization(logits_z, rnd_sample=None):
         q_z = st.StochasticTensor(d.Normal(loc=q_mu, scale=q_sigma))
 
     reduce_index = [1] if len(zshp) == 2 else [1, 2]
-    kl = d.kl(q_z.distribution, p_z, allow_nan_stats=False)
+    kl = d.kl_divergence(q_z.distribution, p_z, allow_nan_stats=False)
     return [q_z, tf.reduce_sum(kl, reduce_index)]
 
 # def gaussian_reparmeterization(logits_z, rnd_sample=None):
@@ -82,7 +82,7 @@ def gumbel_reparmeterization(logits_z, tau, rnd_sample=None,
         q_z_full = st.StochasticTensor(d.OneHotCategorical(logits=logits_z))
 
     reduce_index = [1] if len(logits_z.get_shape().as_list()) == 2 else [1, 2]
-    kl = d.kl(q_z_full.distribution, p_z, allow_nan_stats=False)
+    kl = d.kl_divergence(q_z_full.distribution, p_z, allow_nan_stats=False)
     if len(shp(kl)) > 1:
         return [q_z, tf.reduce_sum(kl, reduce_index)]
     else:
